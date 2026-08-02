@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 from launcher.config import mods_source_dir, minecraft_dir
-
-
-StatusCb = Callable[[str], None]
+from launcher.core.progress import ProgressTracker
 
 
 def instance_mods_dir() -> Path:
@@ -23,27 +21,26 @@ def list_bundled_mods() -> list[Path]:
     return sorted(p for p in src.glob("*.jar") if p.is_file())
 
 
-def sync_mods(on_status: Optional[StatusCb] = None) -> int:
-    """
-    Mirror bundled mods/ into the isolated instance mods folder.
-    Removes jars that are no longer in the pack so the SMP stays consistent.
-    """
+def sync_mods(tracker: Optional[ProgressTracker] = None) -> int:
+    """Mirror bundled mods/ into MinecraftPUTS/minecraft/mods."""
     src = mods_source_dir()
     dst = instance_mods_dir()
     if not src.exists():
-        raise FileNotFoundError(f"Pasta de mods não encontrada: {src}")
+        raise FileNotFoundError(
+            f"Pasta de mods não encontrada ao lado do launcher:\n{src}"
+        )
 
     bundled = {p.name: p for p in list_bundled_mods()}
-    if on_status:
-        on_status(f"Sincronizando {len(bundled)} mods do SMP…")
+    total = max(len(bundled), 1)
+    if tracker:
+        tracker.set_phase("mods", f"Sincronizando {len(bundled)} mods…")
 
-    # Remove stale jars
     for existing in list(dst.glob("*.jar")):
         if existing.name not in bundled:
             existing.unlink(missing_ok=True)
 
     copied = 0
-    for name, src_path in bundled.items():
+    for i, (name, src_path) in enumerate(bundled.items(), start=1):
         target = dst / name
         need_copy = True
         if target.exists():
@@ -55,6 +52,9 @@ def sync_mods(on_status: Optional[StatusCb] = None) -> int:
         if need_copy:
             shutil.copy2(src_path, target)
             copied += 1
-    if on_status:
-        on_status(f"Mods prontos ({len(bundled)} no pack, {copied} atualizados).")
+        if tracker:
+            tracker.set_counts(i, total, f"Mods: {name}")
+
+    if tracker:
+        tracker.complete_phase(f"Mods prontos ({len(bundled)}, {copied} novos/atualizados)")
     return len(bundled)
