@@ -12,13 +12,11 @@ FORGE_VERSION = "1.18.2-40.3.11"
 FORGE_PROFILE = "1.18.2-forge-40.3.11"
 JVM_RUNTIME = "java-runtime-gamma"
 
-# Public Azure app used by Prism Launcher (GPL) — approved for Xbox Live / Minecraft.
-# Redirect must match the app registration exactly.
-MS_CLIENT_ID = "c36a9f36-b8ae-43c3-a484-b3064db1af32"
-MS_REDIRECT_URI = "https://login.microsoftonline.com/common/oauth2/nativeclient"
-# Alternate automatic localhost app (HMCL) — tried first for better UX.
-MS_LOCAL_CLIENT_ID = "e19dd415-8236-4e44-b81b-88591a5c88e5"
-MS_LOCAL_PORT = 29116
+# Azure public client that accepts personal Microsoft accounts (consumers).
+# Override via launcher_config.json → azure_client_id if you register your own app.
+MS_CLIENT_ID = "90890812-00d1-48a8-8d3f-38465ef43b58"
+MS_LOCAL_PORT = 28562
+MS_REDIRECT_URI = f"http://127.0.0.1:{MS_LOCAL_PORT}"
 
 INSTANCE_FOLDER_NAME = "MinecraftPUTS"
 
@@ -108,7 +106,16 @@ class LauncherConfig:
             data = json.loads(path.read_text(encoding="utf-8"))
             known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
             filtered = {k: v for k, v in data.items() if k in known}
-            return cls(**filtered)
+            cfg = cls(**filtered)
+            # Drop broken / revoked public client IDs from older builds
+            broken = {
+                "c36a9f36-b8ae-43c3-a484-b3064db1af32",
+                "e19dd415-8236-4e44-b81b-88591a5c88e5",
+            }
+            if (cfg.azure_client_id or "").strip() in broken:
+                cfg.azure_client_id = ""
+                cfg.save()
+            return cfg
         except Exception:
             return cls()
 
