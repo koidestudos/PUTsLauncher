@@ -515,73 +515,62 @@ class PUTsLauncherApp(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------------------ auth
-    def _ask_redirect_url(self, prompt: str) -> Optional[str]:
-        """Modal to paste OAuth redirect URL (fallback Microsoft flow)."""
-        result: dict[str, Optional[str]] = {"value": None}
-        event = threading.Event()
+    def _show_device_code(self, user_code: str, verify_uri: str) -> None:
+        """Show Microsoft device-code instructions on the main thread."""
 
         def open_dialog():
             win = ctk.CTkToplevel(self)
-            win.title("Cole a URL do login")
-            win.geometry("560x260")
+            win.title("Login Microsoft")
+            win.geometry("480x280")
             win.configure(fg_color=COLORS["bg1"])
             win.transient(self)
-            win.grab_set()
+            try:
+                win.grab_set()
+            except Exception:
+                pass
             frame = ctk.CTkFrame(win, fg_color="transparent")
-            frame.pack(fill="both", expand=True, padx=20, pady=20)
+            frame.pack(fill="both", expand=True, padx=24, pady=24)
             ctk.CTkLabel(
                 frame,
-                text=prompt,
+                text="Entre com sua conta Microsoft",
+                font=FONTS["title"],
+                text_color=COLORS["accent"],
+            ).pack(anchor="w")
+            ctk.CTkLabel(
+                frame,
+                text=f"1. Abra {verify_uri}\n2. Digite o código abaixo\n3. Autorize e volte aqui",
                 font=FONTS["small"],
                 text_color=COLORS["muted"],
-                wraplength=500,
                 justify="left",
                 anchor="w",
-            ).pack(fill="x")
-            entry = ctk.CTkEntry(
+            ).pack(fill="x", pady=(10, 16))
+            ctk.CTkLabel(
                 frame,
-                height=40,
-                fg_color=COLORS["input_bg"],
-                border_color=COLORS["input_border"],
-                text_color=COLORS["text"],
-                placeholder_text="https://login.microsoftonline.com/...",
-            )
-            entry.pack(fill="x", pady=14)
-
-            def confirm():
-                result["value"] = entry.get().strip()
-                win.destroy()
-                event.set()
-
-            def cancel():
-                result["value"] = None
-                win.destroy()
-                event.set()
-
-            row = ctk.CTkFrame(frame, fg_color="transparent")
-            row.pack(fill="x")
+                text=user_code,
+                font=("Consolas", 36, "bold"),
+                text_color=COLORS["accent"],
+            ).pack()
             ctk.CTkButton(
-                row,
-                text="Cancelar",
-                command=cancel,
-                fg_color=COLORS["panel"],
-                hover_color=COLORS["panel_soft"],
-                text_color=COLORS["text"],
-            ).pack(side="left")
-            ctk.CTkButton(
-                row,
-                text="Confirmar",
-                command=confirm,
+                frame,
+                text="Abrir página de login",
+                command=lambda: __import__("webbrowser").open(verify_uri),
                 fg_color=COLORS["accent"],
                 hover_color=COLORS["accent_dim"],
                 text_color=COLORS["accent_text"],
-            ).pack(side="right")
-            win.protocol("WM_DELETE_WINDOW", cancel)
-            entry.focus_set()
+                height=40,
+            ).pack(fill="x", pady=(20, 0))
+            self._device_code_window = win
 
         self.after(0, open_dialog)
-        event.wait(timeout=300)
-        return result["value"]
+
+    def _close_device_code(self) -> None:
+        win = getattr(self, "_device_code_window", None)
+        if win is not None:
+            try:
+                win.destroy()
+            except Exception:
+                pass
+            self._device_code_window = None
 
     def _login_microsoft(self) -> None:
         self._save_form()
@@ -589,11 +578,14 @@ class PUTsLauncherApp(ctk.CTk):
         def job():
             return login_microsoft_browser(
                 self.cfg,
-                on_status=lambda msg: self.after(0, lambda: self.ms_status.configure(text=msg, text_color=COLORS["accent"])),
-                ask_redirect_url=self._ask_redirect_url,
+                on_status=lambda msg: self.after(
+                    0, lambda: self.ms_status.configure(text=msg, text_color=COLORS["accent"])
+                ),
+                on_device_code=self._show_device_code,
             )
 
         def done(session: Optional[GameSession], err):
+            self._close_device_code()
             if err:
                 self._set_status(str(err), ok=False)
                 self.ms_status.configure(text=str(err), text_color=COLORS["danger"])
