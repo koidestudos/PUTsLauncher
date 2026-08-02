@@ -756,12 +756,136 @@ class PUTsLauncherApp(ctk.CTk):
         )
         if not path:
             return
-        variant = "classic"
-        if messagebox.askyesno("Modelo", "É skin slim (Alex)?\n\nSim = slim\nNão = classic (Steve)"):
-            variant = "slim"
+        self._show_skin_variant_picker(Path(path))
 
-        local = Path(path)
+    def _show_skin_variant_picker(self, local: Path) -> None:
+        """In-window Slim/Classic tabs instead of a system Yes/No popup."""
+        if getattr(self, "_variant_overlay", None) and self._variant_overlay.winfo_exists():
+            self._variant_overlay.destroy()
 
+        overlay = ctk.CTkFrame(self, fg_color=COLORS["bg0"], corner_radius=0)
+        self._variant_overlay = overlay
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        # Dim backdrop
+        dim = ctk.CTkFrame(overlay, fg_color="#000000")
+        dim.place(relx=0, rely=0, relwidth=1, relheight=1)
+        try:
+            dim.configure(fg_color="#000000")
+        except Exception:
+            pass
+
+        card = ctk.CTkFrame(
+            overlay,
+            fg_color=COLORS["panel"],
+            corner_radius=20,
+            border_width=1,
+            border_color=COLORS["stroke"],
+        )
+        card.place(relx=0.5, rely=0.5, anchor="center")
+
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(padx=28, pady=26)
+
+        ctk.CTkLabel(
+            inner,
+            text="Modelo da skin",
+            font=FONTS["title"],
+            text_color=COLORS["accent"],
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            inner,
+            text="Escolha o tipo do braço — Classic (Steve) ou Slim (Alex).",
+            font=FONTS["small"],
+            text_color=COLORS["muted"],
+        ).pack(anchor="w", pady=(4, 16))
+
+        variant = ctk.StringVar(value="classic")
+
+        tabs = ctk.CTkSegmentedButton(
+            inner,
+            values=["Classic", "Slim"],
+            variable=variant,
+            font=FONTS["body_bold"],
+            height=42,
+            selected_color=COLORS["accent"],
+            selected_hover_color=COLORS["accent_hot"],
+            unselected_color=COLORS["panel_soft"],
+            unselected_hover_color=COLORS["stroke"],
+            text_color=COLORS["text"],
+            fg_color=COLORS["bg1"],
+        )
+        tabs.pack(fill="x")
+        tabs.set("Classic")
+
+        # Live preview of the picked file while choosing
+        try:
+            self.skin_viewer.set_texture(local, slim=False)
+        except Exception:
+            pass
+
+        hint = ctk.CTkLabel(
+            inner,
+            text=local.name,
+            font=FONTS["tiny"],
+            text_color=COLORS["stroke"],
+        )
+        hint.pack(anchor="w", pady=(12, 0))
+
+        def _api_variant() -> str:
+            return "slim" if variant.get().lower() == "slim" else "classic"
+
+        def on_tabs(value: str) -> None:
+            variant.set(value)
+            self.skin_viewer.set_slim(value.lower() == "slim")
+
+        tabs.configure(command=on_tabs)
+
+        btns = ctk.CTkFrame(inner, fg_color="transparent")
+        btns.pack(fill="x", pady=(22, 0))
+        btns.grid_columnconfigure(0, weight=1)
+        btns.grid_columnconfigure(1, weight=1)
+
+        def close_picker():
+            try:
+                overlay.destroy()
+            except Exception:
+                pass
+            self._variant_overlay = None
+
+        def confirm():
+            chosen = _api_variant()
+            close_picker()
+            self._upload_skin_file(local, chosen)
+
+        ctk.CTkButton(
+            btns,
+            text="Cancelar",
+            height=42,
+            corner_radius=12,
+            font=FONTS["body_bold"],
+            fg_color=COLORS["panel_soft"],
+            hover_color=COLORS["stroke"],
+            text_color=COLORS["text"],
+            command=close_picker,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+        ctk.CTkButton(
+            btns,
+            text="Enviar skin",
+            height=42,
+            corner_radius=12,
+            font=FONTS["body_bold"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hot"],
+            text_color=COLORS["accent_text"],
+            command=confirm,
+        ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        # Approximate card width
+        card.configure(width=420)
+
+    def _upload_skin_file(self, local: Path, variant: str) -> None:
         def job():
             token = self.cfg.microsoft_access_token
             if self.cfg.microsoft_refresh_token:
@@ -779,16 +903,18 @@ class PUTsLauncherApp(ctk.CTk):
                 self.cfg = LauncherConfig.load()
                 upload_skin(session.access_token, local, variant=variant)
 
-            # Preview from the file the user picked (CDN lags / may 403 briefly)
             bust_skin_caches(self.cfg.microsoft_uuid, self.cfg.microsoft_name)
             cached = cache_local_skin(local, uuid=self.cfg.microsoft_uuid, name=self.cfg.microsoft_name)
-            return str(cached)
+            return str(cached), variant
 
-        def done(cached_path, err):
+        def done(result, err):
+            cached_path = None
+            variant_used = variant
+            if result and isinstance(result, tuple):
+                cached_path, variant_used = result
             if err:
-                # Minecraft often accepted the skin even when the API response looks like an error.
                 try:
-                    self.skin_viewer.set_texture(local)
+                    self.skin_viewer.set_texture(local, slim=variant_used == "slim")
                 except Exception:
                     pass
                 messagebox.showwarning(
@@ -798,11 +924,10 @@ class PUTsLauncherApp(ctk.CTk):
                 )
                 return
             if cached_path:
-                self.skin_viewer.set_texture(Path(cached_path))
+                self.skin_viewer.set_texture(Path(cached_path), slim=variant_used == "slim")
             else:
                 self._refresh_skin(bust=True)
             self._load_head()
-            messagebox.showinfo("Mudar skin", "Skin atualizada!")
 
         self._run_bg(job, done, busy_text="SKIN…")
 
