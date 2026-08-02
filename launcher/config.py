@@ -11,18 +11,18 @@ from typing import Any
 MC_VERSION = "1.18.2"
 FORGE_VERSION = "1.18.2-40.3.11"
 FORGE_PROFILE = "1.18.2-forge-40.3.11"
+# Mojang Java 17 runtime (required by Forge 1.18.2)
+JVM_RUNTIME = "java-runtime-gamma"
 
-# Default Azure public-client ID can be set by the SMP owner.
-# Leave empty to rely on offline mode and/or official launcher account import.
 DEFAULT_AZURE_CLIENT_ID = ""
 DEFAULT_REDIRECT_PORT = 27845
+INSTANCE_FOLDER_NAME = "MinecraftPUTS"
 
 
 def app_root() -> Path:
     """Directory that contains the launcher + bundled mods folder."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
-    # launcher/config.py -> repo root
     return Path(__file__).resolve().parent.parent
 
 
@@ -30,16 +30,37 @@ def mods_source_dir() -> Path:
     return app_root() / "mods"
 
 
+def puts_home() -> Path:
+    """
+    User-owned install root:
+      Windows: %USERPROFILE%\\MinecraftPUTS
+      Linux/mac: ~/MinecraftPUTS
+    """
+    path = Path.home() / INSTANCE_FOLDER_NAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def default_instance_dir() -> Path:
-    if os.name == "nt":
-        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-    else:
-        base = Path.home() / ".local" / "share"
-    return base / "PUTsLauncher"
+    """Alias kept for older imports — same as puts_home()."""
+    return puts_home()
 
 
 def config_path() -> Path:
-    return default_instance_dir() / "launcher_config.json"
+    return puts_home() / "launcher_config.json"
+
+
+def minecraft_dir() -> Path:
+    """Game files live in MinecraftPUTS/minecraft (versions, libs, assets, mods, runtime)."""
+    path = puts_home() / "minecraft"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def logs_dir() -> Path:
+    path = puts_home() / "logs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 @dataclass
@@ -79,12 +100,4 @@ class LauncherConfig:
     def save(self) -> None:
         path = config_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = asdict(self)
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def minecraft_dir() -> Path:
-    """Isolated game directory used by this SMP launcher."""
-    path = default_instance_dir() / "minecraft"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+        path.write_text(json.dumps(asdict(self), indent=2, ensure_ascii=False), encoding="utf-8")
