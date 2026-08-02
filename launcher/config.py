@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -11,19 +10,36 @@ from typing import Any
 MC_VERSION = "1.18.2"
 FORGE_VERSION = "1.18.2-40.3.11"
 FORGE_PROFILE = "1.18.2-forge-40.3.11"
-# Mojang Java 17 runtime (required by Forge 1.18.2)
 JVM_RUNTIME = "java-runtime-gamma"
 
-DEFAULT_AZURE_CLIENT_ID = ""
-DEFAULT_REDIRECT_PORT = 27845
+# Public Azure app used by Prism Launcher (GPL) — approved for Xbox Live / Minecraft.
+# Redirect must match the app registration exactly.
+MS_CLIENT_ID = "c36a9f36-b8ae-43c3-a484-b3064db1af32"
+MS_REDIRECT_URI = "https://login.microsoftonline.com/common/oauth2/nativeclient"
+# Alternate automatic localhost app (HMCL) — tried first for better UX.
+MS_LOCAL_CLIENT_ID = "e19dd415-8236-4e44-b81b-88591a5c88e5"
+MS_LOCAL_PORT = 29116
+
 INSTANCE_FOLDER_NAME = "MinecraftPUTS"
 
 
 def app_root() -> Path:
-    """Directory that contains the launcher + bundled mods folder."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
+
+
+def asset_path(*parts: str) -> Path:
+    rel = Path("launcher") / "assets" / Path(*parts)
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+        bundled = meipass / rel
+        if bundled.exists():
+            return bundled
+        beside = Path(sys.executable).resolve().parent / "assets" / Path(*parts)
+        if beside.exists():
+            return beside
+    return Path(__file__).resolve().parent / "assets" / Path(*parts)
 
 
 def mods_source_dir() -> Path:
@@ -31,18 +47,12 @@ def mods_source_dir() -> Path:
 
 
 def puts_home() -> Path:
-    """
-    User-owned install root:
-      Windows: %USERPROFILE%\\MinecraftPUTS
-      Linux/mac: ~/MinecraftPUTS
-    """
     path = Path.home() / INSTANCE_FOLDER_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def default_instance_dir() -> Path:
-    """Alias kept for older imports — same as puts_home()."""
     return puts_home()
 
 
@@ -51,7 +61,6 @@ def config_path() -> Path:
 
 
 def minecraft_dir() -> Path:
-    """Game files live in MinecraftPUTS/minecraft (versions, libs, assets, mods, runtime)."""
     path = puts_home() / "minecraft"
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -59,6 +68,12 @@ def minecraft_dir() -> Path:
 
 def logs_dir() -> Path:
     path = puts_home() / "logs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def cache_dir() -> Path:
+    path = puts_home() / "cache"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -71,8 +86,8 @@ class LauncherConfig:
     java_path: str = ""
     server_ip: str = ""
     server_port: int = 25565
-    azure_client_id: str = DEFAULT_AZURE_CLIENT_ID
-    redirect_port: int = DEFAULT_REDIRECT_PORT
+    azure_client_id: str = ""
+    redirect_port: int = MS_LOCAL_PORT
     microsoft_refresh_token: str = ""
     microsoft_uuid: str = ""
     microsoft_name: str = ""

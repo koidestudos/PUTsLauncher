@@ -1,30 +1,34 @@
 from __future__ import annotations
 
-# Visual direction: dusk jungle / warm amber — adventure SMP, not purple-cyber.
+# Maracujá / dusk tropical — gold pulp on deep cocoa, not generic purple-AI.
 COLORS = {
-    "bg0": "#0c1714",
-    "bg1": "#12201b",
-    "bg2": "#1a2e26",
-    "panel": "#163028",
-    "panel_alt": "#1e3a30",
-    "stroke": "#2f5346",
-    "text": "#eef6f1",
-    "muted": "#9bb5a8",
-    "accent": "#e2a84a",
-    "accent_dim": "#b8842f",
-    "accent_text": "#1a1205",
-    "danger": "#d46868",
-    "ok": "#6fbf8c",
-    "input_bg": "#0f1f1a",
-    "input_border": "#355a4c",
+    "bg0": "#0a0907",
+    "bg1": "#12100c",
+    "bg2": "#1a160f",
+    "panel": "#221c12",
+    "panel_soft": "#2a2216",
+    "stroke": "#4a3c22",
+    "text": "#f7f1dc",
+    "muted": "#b7a88a",
+    "accent": "#f0d24a",
+    "accent_hot": "#ffb81c",
+    "accent_dim": "#c49a28",
+    "accent_text": "#1a1406",
+    "berry": "#8b3a2a",
+    "cream": "#fff6d6",
+    "danger": "#e07060",
+    "ok": "#8bcf7a",
+    "input_bg": "#100e0a",
+    "input_border": "#5a4a28",
+    "ms_blue": "#2f2f2f",
 }
 
 FONTS = {
-    # Prefer distinctive stacks; CustomTkinter maps to available system fonts.
-    "display": ("Georgia", 42, "bold"),
+    "display": ("Georgia", 48, "bold"),
     "title": ("Georgia", 22, "bold"),
     "body": ("Segoe UI", 14),
     "body_bold": ("Segoe UI", 14, "bold"),
     "small": ("Segoe UI", 12),
-    "mono": ("Consolas", 12),
+    "tiny": ("Segoe UI", 11),
+    "button": ("Georgia", 18, "bold"),
 }

@@ -11,7 +11,9 @@ a = Analysis(
     [str(root / "main.py")],
     pathex=[str(root)],
     binaries=[],
-    datas=[],
+    datas=[
+        (str(root / "launcher" / "assets"), "launcher/assets"),
+    ],
     hiddenimports=[
         "customtkinter",
         "minecraft_launcher_lib",

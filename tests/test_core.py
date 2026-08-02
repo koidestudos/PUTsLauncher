@@ -41,6 +41,15 @@ def test_sync_mods_roundtrip(tmp_path, monkeypatch):
     assert len(list((tmp_path / "MinecraftPUTS" / "minecraft" / "mods").glob("*.jar"))) == n
 
 
+def test_is_game_ready_false_on_empty(tmp_path, monkeypatch):
+    import launcher.config as config
+    import launcher.core.installer as inst
+
+    monkeypatch.setattr(config, "minecraft_dir", lambda: tmp_path / "mc")
+    monkeypatch.setattr(inst, "minecraft_dir", lambda: tmp_path / "mc")
+    assert inst.is_game_ready(tmp_path / "mc") is False
+
+
 def test_progress_tracker_reaches_100():
     seen = []
     t = ProgressTracker({"a": 0.5, "b": 0.5}, on_update=lambda s: seen.append(s.percent))
