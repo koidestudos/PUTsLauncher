@@ -257,16 +257,13 @@ class PUTsLauncherApp(ctk.CTk):
         )
         self.btn_ms_login.grid(row=0, column=0, sticky="ew")
 
-        self.profile_chip = ctk.CTkFrame(self.ms_wrap, fg_color=COLORS["panel"], corner_radius=14)
+        self.profile_chip = ctk.CTkFrame(self.ms_wrap, fg_color=COLORS["panel"], corner_radius=14, cursor="hand2")
         self.profile_chip.grid(row=1, column=0, sticky="ew")
         self.profile_chip.grid_columnconfigure(1, weight=1)
         self.profile_chip.grid_remove()
-        # Whole chip opens account menu (except logout)
-        self.profile_chip.bind("<Button-1>", lambda _e: self._toggle_accounts_menu())
 
         self.head_label = ctk.CTkLabel(self.profile_chip, text="", width=40, height=40, cursor="hand2")
         self.head_label.grid(row=0, column=0, padx=(10, 8), pady=8)
-        self.head_label.bind("<Button-1>", lambda _e: self._toggle_accounts_menu())
 
         self.profile_name = ctk.CTkLabel(
             self.profile_chip,
@@ -277,7 +274,6 @@ class PUTsLauncherApp(ctk.CTk):
             cursor="hand2",
         )
         self.profile_name.grid(row=0, column=1, sticky="ew")
-        self.profile_name.bind("<Button-1>", lambda _e: self._toggle_accounts_menu())
 
         self.btn_logout = ctk.CTkButton(
             self.profile_chip,
@@ -292,6 +288,9 @@ class PUTsLauncherApp(ctk.CTk):
             command=self._logout,
         )
         self.btn_logout.grid(row=0, column=2, padx=(8, 10), pady=8)
+
+        # Make the whole chip (except logout) open the accounts menu
+        self._bind_profile_chip_clicks()
 
         # RAM
         ram = ctk.CTkFrame(left, fg_color="transparent")
@@ -420,10 +419,12 @@ class PUTsLauncherApp(ctk.CTk):
         )
 
         self.skin_stage = ctk.CTkFrame(right, fg_color=COLORS["panel"], corner_radius=24)
-        self.skin_stage.grid(row=1, column=0, sticky="nsew", padx=32, pady=(0, 12))
+        self.skin_stage.grid(row=1, column=0, sticky="nsew", padx=28, pady=(0, 12))
+        self.skin_stage.grid_rowconfigure(0, weight=1)
+        self.skin_stage.grid_columnconfigure(0, weight=1)
 
-        self.skin_viewer = Skin3DViewer(self.skin_stage, width=280, height=440, bg=COLORS["panel"])
-        self.skin_viewer.pack(expand=True, fill="both", padx=12, pady=12)
+        self.skin_viewer = Skin3DViewer(self.skin_stage, width=320, height=520, bg=COLORS["panel"])
+        self.skin_viewer.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
 
         self.btn_change_skin = ctk.CTkButton(
             right,
@@ -563,6 +564,29 @@ class PUTsLauncherApp(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------------------ profile / accounts
+    def _bind_profile_chip_clicks(self) -> None:
+        def handler(_event=None):
+            self._toggle_accounts_menu()
+            return "break"
+
+        def walk(widget):
+            if widget == self.btn_logout:
+                return
+            # Skip logout subtree
+            try:
+                parent = widget
+                while parent is not None:
+                    if parent == self.btn_logout:
+                        return
+                    parent = getattr(parent, "master", None)
+            except Exception:
+                pass
+            widget.bind("<Button-1>", handler)
+            for child in widget.winfo_children():
+                walk(child)
+
+        walk(self.profile_chip)
+
     def _refresh_ms_profile(self) -> None:
         if self.auth_mode.get() != "microsoft":
             return
@@ -571,6 +595,7 @@ class PUTsLauncherApp(ctk.CTk):
             self.profile_chip.grid()
             self.profile_name.configure(text=self.cfg.microsoft_name)
             self._load_head()
+            self.after_idle(self._bind_profile_chip_clicks)
             self.btn_change_skin.configure(state="normal")
         else:
             self.profile_chip.grid_remove()
@@ -591,20 +616,18 @@ class PUTsLauncherApp(ctk.CTk):
 
     def _toggle_accounts_menu(self) -> None:
         if self._accounts_popup and self._accounts_popup.winfo_exists():
-            self._accounts_popup.destroy()
-            self._accounts_popup = None
+            self._close_accounts_menu()
             return
-        pop = ctk.CTkToplevel(self)
-        pop.withdraw()
-        pop.overrideredirect(True)
-        pop.configure(fg_color=COLORS["panel"])
-        try:
-            pop.attributes("-alpha", 0.0)
-        except Exception:
-            pass
+
+        # In-window dropdown (Toplevel + FocusOut was closing before "Adicionar conta" appeared)
+        pop = ctk.CTkFrame(
+            self,
+            fg_color=COLORS["panel"],
+            corner_radius=16,
+            border_width=1,
+            border_color=COLORS["stroke"],
+        )
         self._accounts_popup = pop
-        frame = ctk.CTkFrame(pop, fg_color=COLORS["panel"], corner_radius=16)
-        frame.pack(fill="both", expand=True, padx=2, pady=2)
 
         for acc in self.cfg.saved_accounts or []:
             name = acc.get("name") or "?"
@@ -614,7 +637,7 @@ class PUTsLauncherApp(ctk.CTk):
                 return lambda: self._select_account(a)
 
             ctk.CTkButton(
-                frame,
+                pop,
                 text=("●  " if is_current else "○  ") + name,
                 anchor="w",
                 height=36,
@@ -626,7 +649,7 @@ class PUTsLauncherApp(ctk.CTk):
             ).pack(fill="x", padx=8, pady=4)
 
         ctk.CTkButton(
-            frame,
+            pop,
             text="+  Adicionar conta",
             anchor="center",
             height=40,
@@ -639,51 +662,52 @@ class PUTsLauncherApp(ctk.CTk):
         ).pack(fill="x", padx=10, pady=(8, 10))
 
         self.update_idletasks()
-        x = self.profile_chip.winfo_rootx()
-        y = self.profile_chip.winfo_rooty() + self.profile_chip.winfo_height() + 6
+        x = self.profile_chip.winfo_rootx() - self.winfo_rootx()
+        y = self.profile_chip.winfo_rooty() - self.winfo_rooty() + self.profile_chip.winfo_height() + 6
         w = max(240, self.profile_chip.winfo_width())
-        h = max(100, 44 * (len(self.cfg.saved_accounts or []) + 1) + 24)
-        pop.geometry(f"{w}x{h}+{x}+{y}")
-        pop.deiconify()
-        pop.focus_force()
-        pop.bind("<FocusOut>", lambda _e: self._fade_out_accounts())
+        pop.place(x=x, y=y, width=w)
+        pop.lift()
 
-        # Fade-in
-        def fade(step: int = 0) -> None:
-            if not pop.winfo_exists():
-                return
-            try:
-                pop.attributes("-alpha", min(1.0, step / 10))
-            except Exception:
-                return
-            if step < 10:
-                pop.after(18, lambda: fade(step + 1))
+        # Dismiss on outside click (delay so the opening click does not instantly close)
+        self._accounts_listen = False
 
-        fade(0)
+        def arm_listen():
+            self._accounts_listen = True
 
-    def _fade_out_accounts(self) -> None:
+        self.after(200, arm_listen)
+        if not getattr(self, "_accounts_root_bound", False):
+            self.bind("<Button-1>", self._on_root_click_accounts, add="+")
+            self._accounts_root_bound = True
+
+    def _on_root_click_accounts(self, event) -> None:
+        if not getattr(self, "_accounts_listen", False):
+            return
         pop = self._accounts_popup
         if not pop or not pop.winfo_exists():
-            self._accounts_popup = None
             return
+        try:
+            widget = event.widget
+            w = widget
+            while w is not None:
+                if w in (pop, self.profile_chip, self.head_label, self.profile_name):
+                    return
+                w = getattr(w, "master", None)
+        except Exception:
+            pass
+        self._close_accounts_menu()
 
-        def fade(step: int = 10) -> None:
-            if not pop.winfo_exists():
-                self._accounts_popup = None
-                return
+    def _close_accounts_menu(self) -> None:
+        self._accounts_listen = False
+        pop = self._accounts_popup
+        self._accounts_popup = None
+        if pop is not None:
             try:
-                pop.attributes("-alpha", max(0.0, step / 10))
+                pop.destroy()
             except Exception:
-                pop.destroy()
-                self._accounts_popup = None
-                return
-            if step <= 0:
-                pop.destroy()
-                self._accounts_popup = None
-            else:
-                pop.after(16, lambda: fade(step - 1))
+                pass
 
-        fade(10)
+    def _fade_out_accounts(self) -> None:
+        self._close_accounts_menu()
 
     def _select_account(self, account: dict) -> None:
         self._fade_out_accounts()
