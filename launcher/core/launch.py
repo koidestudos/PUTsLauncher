@@ -59,12 +59,19 @@ def prepare_and_launch(
     cfg: LauncherConfig,
     session: GameSession,
     tracker: Optional[ProgressTracker] = None,
+    cancel_event=None,
 ) -> subprocess.Popen:
+    from launcher.core.installer import CancelledError
+
     if tracker is None:
         tracker = ProgressTracker(DEFAULT_PHASES)
 
-    java = prepare_game(cfg, tracker=tracker)
+    java = prepare_game(cfg, tracker=tracker, cancel_event=cancel_event)
+    if cancel_event is not None and cancel_event.is_set():
+        raise CancelledError("Cancelado.")
     sync_mods(tracker=tracker)
+    if cancel_event is not None and cancel_event.is_set():
+        raise CancelledError("Cancelado.")
 
     tracker.set_phase("launch", f"Abrindo Minecraft como {session.username}…")
     command = build_launch_command(cfg, session, java)
@@ -94,7 +101,6 @@ def prepare_and_launch(
     else:
         popen_kwargs["start_new_session"] = True
 
-    # Quick sanity: java + forge profile must exist
     if not Path(java).exists():
         raise RuntimeError(f"Java não encontrado: {java}")
     profile = Path(mc_dir) / "versions" / FORGE_PROFILE / f"{FORGE_PROFILE}.json"

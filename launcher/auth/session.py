@@ -123,4 +123,52 @@ def persist_microsoft_session(cfg: LauncherConfig, session: GameSession, refresh
     if refresh_token:
         cfg.microsoft_refresh_token = refresh_token
     cfg.username = session.username
+
+    # Upsert into saved accounts list for multi-account switcher
+    accounts = list(cfg.saved_accounts or [])
+    entry = {
+        "name": session.username,
+        "uuid": session.uuid,
+        "access_token": session.access_token,
+        "refresh_token": refresh_token or cfg.microsoft_refresh_token,
+    }
+    replaced = False
+    for i, acc in enumerate(accounts):
+        if (acc.get("uuid") or "").replace("-", "") == session.uuid.replace("-", "") or acc.get("name") == session.username:
+            accounts[i] = entry
+            replaced = True
+            break
+    if not replaced:
+        accounts.append(entry)
+    cfg.saved_accounts = accounts
     cfg.save()
+
+
+def switch_account(cfg: LauncherConfig, account: dict[str, Any]) -> None:
+    cfg.auth_mode = "microsoft"
+    cfg.microsoft_name = account.get("name") or ""
+    cfg.microsoft_uuid = account.get("uuid") or ""
+    cfg.microsoft_access_token = account.get("access_token") or ""
+    cfg.microsoft_refresh_token = account.get("refresh_token") or ""
+    cfg.username = cfg.microsoft_name or cfg.username
+    cfg.save()
+
+
+def logout_microsoft(cfg: LauncherConfig, remove_current: bool = True) -> None:
+    current_uuid = (cfg.microsoft_uuid or "").replace("-", "")
+    if remove_current and cfg.saved_accounts:
+        cfg.saved_accounts = [
+            a
+            for a in cfg.saved_accounts
+            if (a.get("uuid") or "").replace("-", "") != current_uuid and a.get("name") != cfg.microsoft_name
+        ]
+    cfg.microsoft_name = ""
+    cfg.microsoft_uuid = ""
+    cfg.microsoft_access_token = ""
+    cfg.microsoft_refresh_token = ""
+    # If another saved account remains, switch to it
+    if cfg.saved_accounts:
+        switch_account(cfg, cfg.saved_accounts[0])
+    else:
+        cfg.auth_mode = "offline"
+        cfg.save()

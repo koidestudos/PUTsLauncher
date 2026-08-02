@@ -147,7 +147,29 @@ def is_game_ready(mc_dir: Optional[Path] = None) -> bool:
     return True
 
 
-def prepare_game(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None) -> str:
+def uninstall_game() -> None:
+    """Remove downloaded Minecraft/Forge/Java runtime under MinecraftPUTS/minecraft."""
+    root = minecraft_dir()
+    # Keep folder itself; wipe contents
+    if not root.exists():
+        return
+    for child in list(root.iterdir()):
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+
+def reinstall_game(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None, cancel_event=None) -> str:
+    uninstall_game()
+    return prepare_game(cfg, tracker=tracker, cancel_event=cancel_event)
+
+
+class CancelledError(RuntimeError):
+    pass
+
+
+def prepare_game(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None, cancel_event=None) -> str:
     """
     Full bootstrap into ~/MinecraftPUTS:
       1) Java 17
@@ -157,8 +179,16 @@ def prepare_game(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None)
     puts = minecraft_dir()
     if tracker:
         tracker.set_detail(f"Pasta do jogo: {puts}")
+
+    def check_cancel():
+        if cancel_event is not None and cancel_event.is_set():
+            raise CancelledError("Download cancelado.")
+
+    check_cancel()
     java = ensure_java(cfg, tracker=tracker)
+    check_cancel()
     _run_forge_with_java(java, tracker=tracker)
+    check_cancel()
     return java
 
 

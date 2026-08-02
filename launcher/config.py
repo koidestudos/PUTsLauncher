@@ -90,6 +90,7 @@ class LauncherConfig:
     microsoft_uuid: str = ""
     microsoft_name: str = ""
     microsoft_access_token: str = ""
+    saved_accounts: list = field(default_factory=list)  # [{name,uuid,access_token,refresh_token}]
     window_width: int = 854
     window_height: int = 480
     close_launcher_on_start: bool = True
