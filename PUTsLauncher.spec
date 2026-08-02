@@ -3,16 +3,21 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all
+
 block_cipher = None
 root = Path(SPECPATH)
 icon_path = root / "launcher" / "assets" / "icon.ico"
 
+numpy_datas, numpy_binaries, numpy_hiddenimports = collect_all("numpy")
+
 a = Analysis(
     [str(root / "main.py")],
     pathex=[str(root)],
-    binaries=[],
+    binaries=numpy_binaries,
     datas=[
         (str(root / "launcher" / "assets"), "launcher/assets"),
+        *numpy_datas,
     ],
     hiddenimports=[
         "customtkinter",
@@ -21,11 +26,14 @@ a = Analysis(
         "minecraft_launcher_lib.command",
         "minecraft_launcher_lib.microsoft_account",
         "PIL",
+        "numpy",
         "requests",
         "launcher",
         "launcher.ui.app",
+        "launcher.ui.skin3d",
         "launcher.core.launch",
         "launcher.auth.microsoft",
+        *numpy_hiddenimports,
     ],
     hookspath=[],
     hooksconfig={},
