@@ -20,7 +20,13 @@ from launcher.auth import (
     session_from_config_microsoft,
 )
 from launcher.auth.session import GameSession, logout_microsoft, switch_account
-from launcher.auth.skin import fetch_head_avatar, fetch_skin_texture, upload_skin
+from launcher.auth.skin import (
+    bust_skin_caches,
+    cache_local_skin,
+    fetch_head_avatar,
+    fetch_skin_texture,
+    upload_skin,
+)
 from launcher.config import (
     FORGE_VERSION,
     MC_VERSION,
@@ -257,23 +263,27 @@ class PUTsLauncherApp(ctk.CTk):
         )
         self.btn_ms_login.grid(row=0, column=0, sticky="ew")
 
-        self.profile_chip = ctk.CTkFrame(self.ms_wrap, fg_color=COLORS["panel"], corner_radius=14, cursor="hand2")
+        self.profile_chip = ctk.CTkFrame(self.ms_wrap, fg_color=COLORS["panel"], corner_radius=14)
         self.profile_chip.grid(row=1, column=0, sticky="ew")
-        self.profile_chip.grid_columnconfigure(1, weight=1)
+        self.profile_chip.grid_columnconfigure(0, weight=1)
         self.profile_chip.grid_remove()
 
-        self.head_label = ctk.CTkLabel(self.profile_chip, text="", width=40, height=40, cursor="hand2")
-        self.head_label.grid(row=0, column=0, padx=(10, 8), pady=8)
-
-        self.profile_name = ctk.CTkLabel(
+        # Real button so the whole left area always receives clicks (CTk labels eat binds)
+        self.profile_btn = ctk.CTkButton(
             self.profile_chip,
-            text="",
-            font=FONTS["body_bold"],
-            text_color=COLORS["text"],
+            text="Conta",
+            image=None,
+            compound="left",
             anchor="w",
-            cursor="hand2",
+            height=48,
+            corner_radius=12,
+            font=FONTS["body_bold"],
+            fg_color="transparent",
+            hover_color=COLORS["panel_soft"],
+            text_color=COLORS["text"],
+            command=self._toggle_accounts_menu,
         )
-        self.profile_name.grid(row=0, column=1, sticky="ew")
+        self.profile_btn.grid(row=0, column=0, sticky="ew", padx=(4, 0), pady=4)
 
         self.btn_logout = ctk.CTkButton(
             self.profile_chip,
@@ -287,10 +297,7 @@ class PUTsLauncherApp(ctk.CTk):
             text_color=COLORS["cream"],
             command=self._logout,
         )
-        self.btn_logout.grid(row=0, column=2, padx=(8, 10), pady=8)
-
-        # Make the whole chip (except logout) open the accounts menu
-        self._bind_profile_chip_clicks()
+        self.btn_logout.grid(row=0, column=1, padx=(4, 10), pady=8)
 
         # RAM
         ram = ctk.CTkFrame(left, fg_color="transparent")
@@ -564,38 +571,14 @@ class PUTsLauncherApp(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------------------ profile / accounts
-    def _bind_profile_chip_clicks(self) -> None:
-        def handler(_event=None):
-            self._toggle_accounts_menu()
-            return "break"
-
-        def walk(widget):
-            if widget == self.btn_logout:
-                return
-            # Skip logout subtree
-            try:
-                parent = widget
-                while parent is not None:
-                    if parent == self.btn_logout:
-                        return
-                    parent = getattr(parent, "master", None)
-            except Exception:
-                pass
-            widget.bind("<Button-1>", handler)
-            for child in widget.winfo_children():
-                walk(child)
-
-        walk(self.profile_chip)
-
     def _refresh_ms_profile(self) -> None:
         if self.auth_mode.get() != "microsoft":
             return
         if self._ms_logged_in():
             self.btn_ms_login.grid_remove()
             self.profile_chip.grid()
-            self.profile_name.configure(text=self.cfg.microsoft_name)
+            self.profile_btn.configure(text=f"  {self.cfg.microsoft_name}")
             self._load_head()
-            self.after_idle(self._bind_profile_chip_clicks)
             self.btn_change_skin.configure(state="normal")
         else:
             self.profile_chip.grid_remove()
@@ -607,10 +590,13 @@ class PUTsLauncherApp(ctk.CTk):
             path = fetch_head_avatar(uuid=self.cfg.microsoft_uuid, name=self.cfg.microsoft_name, size=64)
             if not path:
                 return
-            img = _load_ctk_image(Path(path), (36, 36))
+            img = _load_ctk_image(Path(path), (32, 32))
             if img:
-                self.after(0, lambda: self.head_label.configure(image=img, text=""))
-                self._head_image = img
+                def apply():
+                    self._head_image = img
+                    self.profile_btn.configure(image=img, text=f"  {self.cfg.microsoft_name}")
+
+                self.after(0, apply)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -619,7 +605,6 @@ class PUTsLauncherApp(ctk.CTk):
             self._close_accounts_menu()
             return
 
-        # In-window dropdown (Toplevel + FocusOut was closing before "Adicionar conta" appeared)
         pop = ctk.CTkFrame(
             self,
             fg_color=COLORS["panel"],
@@ -629,7 +614,19 @@ class PUTsLauncherApp(ctk.CTk):
         )
         self._accounts_popup = pop
 
-        for acc in self.cfg.saved_accounts or []:
+        accounts = list(self.cfg.saved_accounts or [])
+        # Always show current account even if saved_accounts is empty/stale
+        if self.cfg.microsoft_name and not any((a.get("name") == self.cfg.microsoft_name) for a in accounts):
+            accounts = [
+                {
+                    "name": self.cfg.microsoft_name,
+                    "uuid": self.cfg.microsoft_uuid,
+                    "access_token": self.cfg.microsoft_access_token,
+                    "refresh_token": self.cfg.microsoft_refresh_token,
+                }
+            ] + accounts
+
+        for acc in accounts:
             name = acc.get("name") or "?"
             is_current = name == self.cfg.microsoft_name
 
@@ -652,29 +649,32 @@ class PUTsLauncherApp(ctk.CTk):
             pop,
             text="+  Adicionar conta",
             anchor="center",
-            height=40,
+            height=42,
             corner_radius=14,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hot"],
             text_color=COLORS["accent_text"],
             font=FONTS["body_bold"],
             command=self._add_account,
-        ).pack(fill="x", padx=10, pady=(8, 10))
+        ).pack(fill="x", padx=10, pady=(8, 12))
 
         self.update_idletasks()
         x = self.profile_chip.winfo_rootx() - self.winfo_rootx()
         y = self.profile_chip.winfo_rooty() - self.winfo_rooty() + self.profile_chip.winfo_height() + 6
-        w = max(240, self.profile_chip.winfo_width())
-        pop.place(x=x, y=y, width=w)
+        w = max(260, self.profile_chip.winfo_width())
+        pop.place(x=max(8, x), y=y, width=w)
         pop.lift()
+        try:
+            pop.tkraise()
+        except Exception:
+            pass
 
-        # Dismiss on outside click (delay so the opening click does not instantly close)
         self._accounts_listen = False
 
         def arm_listen():
             self._accounts_listen = True
 
-        self.after(200, arm_listen)
+        self.after(250, arm_listen)
         if not getattr(self, "_accounts_root_bound", False):
             self.bind("<Button-1>", self._on_root_click_accounts, add="+")
             self._accounts_root_bound = True
@@ -689,7 +689,7 @@ class PUTsLauncherApp(ctk.CTk):
             widget = event.widget
             w = widget
             while w is not None:
-                if w in (pop, self.profile_chip, self.head_label, self.profile_name):
+                if w in (pop, self.profile_chip, self.profile_btn):
                     return
                 w = getattr(w, "master", None)
         except Exception:
@@ -717,10 +717,11 @@ class PUTsLauncherApp(ctk.CTk):
         self._refresh_skin()
 
     def _add_account(self) -> None:
-        self._fade_out_accounts()
+        self._close_accounts_menu()
         self._login_microsoft()
 
     def _logout(self) -> None:
+        self._close_accounts_menu()
         logout_microsoft(self.cfg, remove_current=True)
         self.cfg = LauncherConfig.load()
         if self._ms_logged_in():
@@ -731,7 +732,7 @@ class PUTsLauncherApp(ctk.CTk):
             self._set_mode("offline")
 
     # ------------------------------------------------------------------ skin
-    def _refresh_skin(self) -> None:
+    def _refresh_skin(self, bust: bool = False) -> None:
         def worker():
             uuid = ""
             name = ""
@@ -740,7 +741,7 @@ class PUTsLauncherApp(ctk.CTk):
                 name = self.cfg.microsoft_name
             else:
                 name = self.nick_entry.get().strip() or "Steve"
-            path = fetch_skin_texture(uuid=uuid, name=name)
+            path = fetch_skin_texture(uuid=uuid, name=name, bust=bust)
             self.after(0, lambda: self.skin_viewer.set_texture(path))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -756,12 +757,12 @@ class PUTsLauncherApp(ctk.CTk):
         if not path:
             return
         variant = "classic"
-        # Ask slim vs classic quickly
         if messagebox.askyesno("Modelo", "É skin slim (Alex)?\n\nSim = slim\nNão = classic (Steve)"):
             variant = "slim"
 
+        local = Path(path)
+
         def job():
-            # Refresh token first if possible
             token = self.cfg.microsoft_access_token
             if self.cfg.microsoft_refresh_token:
                 try:
@@ -770,20 +771,38 @@ class PUTsLauncherApp(ctk.CTk):
                     token = session.access_token
                 except Exception:
                     pass
-            upload_skin(token, Path(path), variant=variant)
-            # Bust cache
-            from launcher.auth.skin import texture_cache_path
 
-            cached = texture_cache_path(self.cfg.microsoft_uuid or self.cfg.microsoft_name)
-            cached.unlink(missing_ok=True)
-            return True
+            try:
+                upload_skin(token, local, variant=variant)
+            except PermissionError:
+                session = refresh_microsoft_session(self.cfg)
+                self.cfg = LauncherConfig.load()
+                upload_skin(session.access_token, local, variant=variant)
 
-        def done(_ok, err):
+            # Preview from the file the user picked (CDN lags / may 403 briefly)
+            bust_skin_caches(self.cfg.microsoft_uuid, self.cfg.microsoft_name)
+            cached = cache_local_skin(local, uuid=self.cfg.microsoft_uuid, name=self.cfg.microsoft_name)
+            return str(cached)
+
+        def done(cached_path, err):
             if err:
-                messagebox.showerror("Mudar skin", str(err))
+                # Minecraft often accepted the skin even when the API response looks like an error.
+                try:
+                    self.skin_viewer.set_texture(local)
+                except Exception:
+                    pass
+                messagebox.showwarning(
+                    "Mudar skin",
+                    f"{err}\n\nSe a skin mudou no Minecraft, ignore este aviso — "
+                    "o preview do launcher já tentou atualizar com o arquivo local.",
+                )
                 return
-            self._refresh_skin()
+            if cached_path:
+                self.skin_viewer.set_texture(Path(cached_path))
+            else:
+                self._refresh_skin(bust=True)
             self._load_head()
+            messagebox.showinfo("Mudar skin", "Skin atualizada!")
 
         self._run_bg(job, done, busy_text="SKIN…")
 
