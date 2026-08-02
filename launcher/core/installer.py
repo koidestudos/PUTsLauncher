@@ -134,6 +134,19 @@ def _run_forge_with_java(java_path: str, tracker: Optional[ProgressTracker] = No
         os.environ.update(old_env)
 
 
+def is_game_ready(mc_dir: Optional[Path] = None) -> bool:
+    """True when Java + Forge profile are already installed (Baixar → Jogar)."""
+    root = Path(mc_dir or minecraft_dir())
+    if not forge_installed(root):
+        return False
+    if not java_runtime_path(root):
+        # System java is acceptable if forge already exists
+        if not shutil.which("javaw") and not shutil.which("java"):
+            return False
+    # Mods folder should exist; empty pack still counts as "downloaded" for forge/java
+    return True
+
+
 def prepare_game(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None) -> str:
     """
     Full bootstrap into ~/MinecraftPUTS:
