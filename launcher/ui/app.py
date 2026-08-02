@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import threading
 import traceback
 from pathlib import Path
@@ -7,17 +9,18 @@ from typing import Optional
 
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageFilter, ImageTk
+from tkinter import filedialog, messagebox
 
 from launcher import __app_name__, __version__
 from launcher.auth import (
     MicrosoftAuthError,
-    fetch_skin_render,
     login_microsoft_browser,
     offline_session,
     refresh_microsoft_session,
     session_from_config_microsoft,
 )
-from launcher.auth.session import GameSession
+from launcher.auth.session import GameSession, logout_microsoft, switch_account
+from launcher.auth.skin import fetch_head_avatar, fetch_skin_texture, upload_skin
 from launcher.config import (
     FORGE_VERSION,
     MC_VERSION,
@@ -28,14 +31,18 @@ from launcher.config import (
 )
 from launcher.core import (
     DEFAULT_PHASES,
+    CancelledError,
     ProgressState,
     ProgressTracker,
     is_game_ready,
     list_bundled_mods,
     prepare_and_launch,
     prepare_game,
+    reinstall_game,
     sync_mods,
+    uninstall_game,
 )
+from launcher.ui.skin3d import Skin3DViewer
 from launcher.ui.theme import COLORS, FONTS
 
 
@@ -54,17 +61,14 @@ def _load_ctk_image(path: Path, size: tuple[int, int]) -> Optional[ctk.CTkImage]
 
 
 def _make_glow_backdrop(width: int, height: int) -> Image.Image:
-    """Warm cocoa gradient with soft gold bloom — atmosphere, not flat fill."""
     img = Image.new("RGB", (width, height), (10, 9, 7))
     draw = ImageDraw.Draw(img, "RGBA")
-    # Top-left gold wash
     for i in range(28):
         alpha = max(0, 40 - i)
         draw.ellipse(
             [-width // 3 + i * 8, -height // 4 + i * 6, width // 2 - i * 4, height // 2 - i * 3],
             fill=(240, 210, 74, alpha),
         )
-    # Bottom berry warmth
     for i in range(22):
         alpha = max(0, 28 - i)
         draw.ellipse(
@@ -74,26 +78,53 @@ def _make_glow_backdrop(width: int, height: int) -> Image.Image:
     return img.filter(ImageFilter.GaussianBlur(28))
 
 
+def _open_path(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        if os.name == "nt":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys_platform() == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except Exception:
+        pass
+
+
+def sys_platform() -> str:
+    import sys
+
+    return sys.platform
+
+
 class PUTsLauncherApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.cfg = LauncherConfig.load()
         self.title(f"{__app_name__}")
-        self.geometry("980x640")
-        self.minsize(900, 600)
+        self.geometry("1020x680")
+        self.minsize(940, 620)
         self.configure(fg_color=COLORS["bg0"])
         self._busy = False
         self._downloading = False
-        self._skin_image: Optional[ctk.CTkImage] = None
-        self._logo_image = _load_ctk_image(asset_path("logo_circle.png"), (86, 86))
+        self._cancel = threading.Event()
+        self._game_proc = None
+        self._head_image: Optional[ctk.CTkImage] = None
+        self._logo_image = _load_ctk_image(asset_path("logo_square.png"), (78, 78)) or _load_ctk_image(
+            asset_path("maracuja_256.png"), (78, 78)
+        )
         self._ms_image = _load_ctk_image(asset_path("microsoft.png"), (18, 18))
-        self._backdrop_label: Optional[ctk.CTkLabel] = None
+        self._backdrop_label = None
         self._backdrop_photo = None
+        self._menu_popup = None
+        self._accounts_popup = None
+        self._device_code_window = None
 
         self._build()
         self.after(80, self._paint_backdrop)
         self.after(120, self._refresh_ready_state)
-        self.after(200, self._refresh_skin)
+        self.after(180, self._refresh_ms_profile)
+        self.after(220, self._refresh_skin)
 
     # ------------------------------------------------------------------ build
     def _build(self) -> None:
@@ -106,30 +137,35 @@ class PUTsLauncherApp(ctk.CTk):
         self.shell.grid_columnconfigure(1, weight=2)
         self.shell.grid_rowconfigure(0, weight=1)
 
-        # LEFT — brand + controls
         left = ctk.CTkFrame(self.shell, fg_color="transparent", corner_radius=0)
         left.grid(row=0, column=0, sticky="nsew")
         left.grid_columnconfigure(0, weight=1)
         left.grid_rowconfigure(6, weight=1)
 
         brand = ctk.CTkFrame(left, fg_color="transparent")
-        brand.grid(row=0, column=0, sticky="ew", padx=42, pady=(36, 8))
+        brand.grid(row=0, column=0, sticky="ew", padx=42, pady=(32, 6))
         brand.grid_columnconfigure(1, weight=1)
 
-        if self._logo_image:
-            ctk.CTkLabel(brand, text="", image=self._logo_image).grid(row=0, column=0, rowspan=2, padx=(0, 16))
+        # Logo = open MinecraftPUTS folder
+        self.logo_btn = ctk.CTkButton(
+            brand,
+            text="",
+            image=self._logo_image,
+            width=86,
+            height=86,
+            corner_radius=14,
+            fg_color=COLORS["panel"],
+            hover_color=COLORS["panel_soft"],
+            command=lambda: _open_path(puts_home()),
+        )
+        self.logo_btn.grid(row=0, column=0, rowspan=2, padx=(0, 16))
 
+        ctk.CTkLabel(brand, text="PUTs", font=FONTS["display"], text_color=COLORS["accent"], anchor="w").grid(
+            row=0, column=1, sticky="sw"
+        )
         ctk.CTkLabel(
             brand,
-            text="PUTs",
-            font=FONTS["display"],
-            text_color=COLORS["accent"],
-            anchor="w",
-        ).grid(row=0, column=1, sticky="sw")
-
-        ctk.CTkLabel(
-            brand,
-            text="SMP Launcher  ·  maracujá edition",
+            text="Minecraft Launcher  ·  maracujá edition",
             font=FONTS["body"],
             text_color=COLORS["muted"],
             anchor="w",
@@ -142,7 +178,7 @@ class PUTsLauncherApp(ctk.CTk):
             text_color=COLORS["stroke"],
             anchor="w",
         )
-        self.meta_label.grid(row=1, column=0, sticky="ew", padx=42, pady=(4, 18))
+        self.meta_label.grid(row=1, column=0, sticky="ew", padx=42, pady=(2, 14))
 
         # Mode pills
         modes = ctk.CTkFrame(left, fg_color="transparent")
@@ -155,7 +191,7 @@ class PUTsLauncherApp(ctk.CTk):
             modes,
             text="Offline",
             command=lambda: self._set_mode("offline"),
-            height=38,
+            height=36,
             corner_radius=10,
             font=FONTS["body_bold"],
             fg_color=COLORS["accent"],
@@ -167,7 +203,7 @@ class PUTsLauncherApp(ctk.CTk):
             modes,
             text="Microsoft",
             command=lambda: self._set_mode("microsoft"),
-            height=38,
+            height=36,
             corner_radius=10,
             font=FONTS["body_bold"],
             fg_color=COLORS["panel"],
@@ -180,14 +216,14 @@ class PUTsLauncherApp(ctk.CTk):
 
         # Offline nick
         self.nick_wrap = ctk.CTkFrame(left, fg_color="transparent")
-        self.nick_wrap.grid(row=3, column=0, sticky="ew", padx=42, pady=(16, 0))
+        self.nick_wrap.grid(row=3, column=0, sticky="ew", padx=42, pady=(14, 0))
         self.nick_wrap.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            self.nick_wrap, text="Nickname", font=FONTS["small"], text_color=COLORS["muted"], anchor="w"
-        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(self.nick_wrap, text="Nickname", font=FONTS["small"], text_color=COLORS["muted"], anchor="w").grid(
+            row=0, column=0, sticky="w"
+        )
         self.nick_entry = ctk.CTkEntry(
             self.nick_wrap,
-            height=44,
+            height=42,
             corner_radius=10,
             font=FONTS["body"],
             fg_color=COLORS["input_bg"],
@@ -199,18 +235,11 @@ class PUTsLauncherApp(ctk.CTk):
         self.nick_entry.insert(0, self.cfg.username or "Steve")
         self.nick_entry.bind("<KeyRelease>", lambda _e: self.after(400, self._refresh_skin))
 
-        # Microsoft login button (with logo)
+        # Microsoft area: login OR profile chip
         self.ms_wrap = ctk.CTkFrame(left, fg_color="transparent")
-        self.ms_wrap.grid(row=4, column=0, sticky="ew", padx=42, pady=(16, 0))
+        self.ms_wrap.grid(row=4, column=0, sticky="ew", padx=42, pady=(14, 0))
         self.ms_wrap.grid_columnconfigure(0, weight=1)
-        self.ms_status = ctk.CTkLabel(
-            self.ms_wrap,
-            text=self._ms_status_text(),
-            font=FONTS["small"],
-            text_color=COLORS["muted"],
-            anchor="w",
-        )
-        self.ms_status.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+
         self.btn_ms_login = ctk.CTkButton(
             self.ms_wrap,
             text="  Login no navegador",
@@ -226,11 +255,52 @@ class PUTsLauncherApp(ctk.CTk):
             border_width=1,
             border_color="#555555",
         )
-        self.btn_ms_login.grid(row=1, column=0, sticky="ew")
+        self.btn_ms_login.grid(row=0, column=0, sticky="ew")
+
+        self.profile_chip = ctk.CTkFrame(self.ms_wrap, fg_color=COLORS["panel"], corner_radius=12)
+        self.profile_chip.grid(row=1, column=0, sticky="ew")
+        self.profile_chip.grid_columnconfigure(1, weight=1)
+        self.profile_chip.grid_remove()
+
+        self.head_label = ctk.CTkLabel(self.profile_chip, text="", width=40, height=40)
+        self.head_label.grid(row=0, column=0, padx=(10, 8), pady=8)
+
+        self.profile_name = ctk.CTkLabel(
+            self.profile_chip, text="", font=FONTS["body_bold"], text_color=COLORS["text"], anchor="w"
+        )
+        self.profile_name.grid(row=0, column=1, sticky="ew")
+
+        self.btn_accounts = ctk.CTkButton(
+            self.profile_chip,
+            text="▾",
+            width=34,
+            height=34,
+            corner_radius=8,
+            font=FONTS["body_bold"],
+            fg_color=COLORS["panel_soft"],
+            hover_color=COLORS["stroke"],
+            text_color=COLORS["accent"],
+            command=self._toggle_accounts_menu,
+        )
+        self.btn_accounts.grid(row=0, column=2, padx=(6, 6))
+
+        self.btn_logout = ctk.CTkButton(
+            self.profile_chip,
+            text="Log out",
+            width=78,
+            height=34,
+            corner_radius=8,
+            font=FONTS["small"],
+            fg_color=COLORS["berry"],
+            hover_color="#a04838",
+            text_color=COLORS["cream"],
+            command=self._logout,
+        )
+        self.btn_logout.grid(row=0, column=3, padx=(0, 10))
 
         # RAM
         ram = ctk.CTkFrame(left, fg_color="transparent")
-        ram.grid(row=5, column=0, sticky="ew", padx=42, pady=(18, 0))
+        ram.grid(row=5, column=0, sticky="ew", padx=42, pady=(16, 0))
         ram.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(ram, text="Memória RAM", font=FONTS["small"], text_color=COLORS["muted"], anchor="w").grid(
             row=0, column=0, sticky="w"
@@ -256,9 +326,9 @@ class PUTsLauncherApp(ctk.CTk):
         )
         self.ram_value.grid(row=0, column=1, padx=(12, 0))
 
-        # Action + progress (progress hidden by default)
+        # Actions
         actions = ctk.CTkFrame(left, fg_color="transparent")
-        actions.grid(row=7, column=0, sticky="ew", padx=42, pady=(10, 28))
+        actions.grid(row=7, column=0, sticky="ew", padx=42, pady=(10, 24))
         actions.grid_columnconfigure(0, weight=1)
 
         self.progress_box = ctk.CTkFrame(actions, fg_color=COLORS["panel"], corner_radius=14)
@@ -281,13 +351,7 @@ class PUTsLauncherApp(ctk.CTk):
         self.progress.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 6))
         self.progress.set(0)
         self.detail_label = ctk.CTkLabel(
-            self.progress_box,
-            text="",
-            font=FONTS["small"],
-            text_color=COLORS["muted"],
-            anchor="w",
-            wraplength=480,
-            justify="left",
+            self.progress_box, text="", font=FONTS["small"], text_color=COLORS["muted"], anchor="w", wraplength=480
         )
         self.detail_label.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 2))
         self.eta_label = ctk.CTkLabel(
@@ -296,64 +360,90 @@ class PUTsLauncherApp(ctk.CTk):
         self.eta_label.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 14))
         self.progress_box.grid_remove()
 
+        btn_row = ctk.CTkFrame(actions, fg_color="transparent")
+        btn_row.grid(row=1, column=0, sticky="ew")
+        btn_row.grid_columnconfigure(0, weight=1)
+
         self.action_btn = ctk.CTkButton(
-            actions,
+            btn_row,
             text="BAIXAR",
             command=self._on_action,
-            height=54,
+            height=52,
             corner_radius=12,
             font=FONTS["button"],
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hot"],
             text_color=COLORS["accent_text"],
         )
-        self.action_btn.grid(row=1, column=0, sticky="ew")
+        self.action_btn.grid(row=0, column=0, sticky="ew")
 
-        self.status = ctk.CTkLabel(
+        self.menu_btn = ctk.CTkButton(
+            btn_row,
+            text="▾",
+            width=48,
+            height=52,
+            corner_radius=12,
+            font=FONTS["button"],
+            fg_color=COLORS["accent_dim"],
+            hover_color=COLORS["accent_hot"],
+            text_color=COLORS["accent_text"],
+            command=self._toggle_action_menu,
+        )
+        self.menu_btn.grid(row=0, column=1, padx=(8, 0))
+
+        self.cancel_btn = ctk.CTkButton(
             actions,
-            text=f"Pasta: {puts_home()}   ·   v{__version__}",
+            text="CANCELAR",
+            command=self._cancel_action,
+            height=40,
+            corner_radius=10,
+            font=FONTS["body_bold"],
+            fg_color=COLORS["berry"],
+            hover_color="#a04838",
+            text_color=COLORS["cream"],
+        )
+        self.cancel_btn.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self.cancel_btn.grid_remove()
+
+        self.footer = ctk.CTkLabel(
+            actions,
+            text=f"v{__version__}  ·  clique no maracujá para abrir a pasta",
             font=FONTS["tiny"],
             text_color=COLORS["stroke"],
             anchor="w",
         )
-        self.status.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self.footer.grid(row=3, column=0, sticky="ew", pady=(10, 0))
 
-        # RIGHT — skin stage
+        # RIGHT — 3D skin
         right = ctk.CTkFrame(self.shell, fg_color=COLORS["bg2"], corner_radius=0)
         right.grid(row=0, column=1, sticky="nsew")
         right.grid_rowconfigure(1, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(
-            right,
-            text="Sua skin",
-            font=FONTS["title"],
-            text_color=COLORS["cream"],
-            anchor="center",
-        ).grid(row=0, column=0, pady=(48, 8))
+        ctk.CTkLabel(right, text="Sua skin", font=FONTS["title"], text_color=COLORS["cream"]).grid(
+            row=0, column=0, pady=(40, 8)
+        )
 
         self.skin_stage = ctk.CTkFrame(right, fg_color=COLORS["panel"], corner_radius=24)
-        self.skin_stage.grid(row=1, column=0, sticky="nsew", padx=36, pady=(0, 16))
-        self.skin_stage.grid_rowconfigure(0, weight=1)
-        self.skin_stage.grid_columnconfigure(0, weight=1)
+        self.skin_stage.grid(row=1, column=0, sticky="nsew", padx=32, pady=(0, 12))
 
-        self.skin_label = ctk.CTkLabel(
-            self.skin_stage,
-            text="Entre com Microsoft\nou digite um nick",
-            font=FONTS["body"],
-            text_color=COLORS["muted"],
-            justify="center",
-        )
-        self.skin_label.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        self.skin_viewer = Skin3DViewer(self.skin_stage, width=240, height=380, bg=COLORS["panel"])
+        self.skin_viewer.pack(expand=True, fill="both", padx=16, pady=16)
 
-        self.skin_name = ctk.CTkLabel(
+        self.btn_change_skin = ctk.CTkButton(
             right,
-            text="",
+            text="Mudar skin",
+            command=self._change_skin,
+            height=38,
+            corner_radius=10,
             font=FONTS["body_bold"],
-            text_color=COLORS["accent"],
-            anchor="center",
+            fg_color=COLORS["panel"],
+            hover_color=COLORS["panel_soft"],
+            text_color=COLORS["text"],
+            border_width=1,
+            border_color=COLORS["stroke"],
         )
-        self.skin_name.grid(row=2, column=0, pady=(0, 40))
+        self.btn_change_skin.grid(row=2, column=0, sticky="ew", padx=48, pady=(0, 36))
 
         self._set_mode(self.auth_mode.get())
         self._refresh_ready_state()
@@ -362,8 +452,8 @@ class PUTsLauncherApp(ctk.CTk):
         try:
             import tkinter as tk
 
-            w = max(self.winfo_width(), 980)
-            h = max(self.winfo_height(), 640)
+            w = max(self.winfo_width(), 1020)
+            h = max(self.winfo_height(), 680)
             img = _make_glow_backdrop(w, h)
             self._backdrop_photo = ImageTk.PhotoImage(img)
             if self._backdrop_label is None:
@@ -375,11 +465,9 @@ class PUTsLauncherApp(ctk.CTk):
         except Exception:
             pass
 
-    # ------------------------------------------------------------------ state
-    def _ms_status_text(self) -> str:
-        if self.cfg.microsoft_name:
-            return f"Conectado: {self.cfg.microsoft_name}"
-        return "Entre com sua conta Microsoft"
+    # ------------------------------------------------------------------ helpers
+    def _ms_logged_in(self) -> bool:
+        return bool(self.cfg.microsoft_name and self.cfg.microsoft_access_token)
 
     def _set_mode(self, mode: str) -> None:
         self.auth_mode.set(mode)
@@ -402,13 +490,11 @@ class PUTsLauncherApp(ctk.CTk):
         else:
             self.nick_wrap.grid_remove()
             self.ms_wrap.grid()
+            self._refresh_ms_profile()
         self._refresh_skin()
 
     def _on_ram(self, value: float) -> None:
         self.ram_value.configure(text=f"{int(round(value))} GB")
-
-    def _set_status(self, text: str, ok: bool = True) -> None:
-        self.status.configure(text=text, text_color=COLORS["ok"] if ok else COLORS["danger"])
 
     def _refresh_ready_state(self) -> None:
         ready = is_game_ready()
@@ -417,22 +503,22 @@ class PUTsLauncherApp(ctk.CTk):
             text=f"Minecraft {MC_VERSION}  ·  Forge {FORGE_VERSION}  ·  {len(mods)} mods"
             + ("  ·  pronto" if ready else "  ·  precisa baixar")
         )
-        if self._downloading:
+        if self._downloading or self._busy:
             return
         if ready:
             self.action_btn.configure(text="JOGAR", fg_color=COLORS["accent"], hover_color=COLORS["accent_hot"])
-            self.progress_box.grid_remove()
         else:
             self.action_btn.configure(text="BAIXAR", fg_color=COLORS["accent_hot"], hover_color=COLORS["accent"])
-            self.progress_box.grid_remove()
-        if not mods_source_dir().exists():
-            self._set_status(f"Pasta mods não encontrada: {mods_source_dir()}", ok=False)
+        self.progress_box.grid_remove()
+        self.cancel_btn.grid_remove()
 
     def _show_progress(self, show: bool) -> None:
         if show:
             self.progress_box.grid()
+            self.cancel_btn.grid()
         else:
             self.progress_box.grid_remove()
+            self.cancel_btn.grid_remove()
 
     def _set_progress_ui(self, state: ProgressState) -> None:
         self._show_progress(True)
@@ -481,9 +567,111 @@ class PUTsLauncherApp(ctk.CTk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    # ------------------------------------------------------------------ profile / accounts
+    def _refresh_ms_profile(self) -> None:
+        if self.auth_mode.get() != "microsoft":
+            return
+        if self._ms_logged_in():
+            self.btn_ms_login.grid_remove()
+            self.profile_chip.grid()
+            self.profile_name.configure(text=self.cfg.microsoft_name)
+            self._load_head()
+            self.btn_change_skin.configure(state="normal")
+        else:
+            self.profile_chip.grid_remove()
+            self.btn_ms_login.grid()
+            self.btn_change_skin.configure(state="disabled")
+
+    def _load_head(self) -> None:
+        def worker():
+            path = fetch_head_avatar(uuid=self.cfg.microsoft_uuid, name=self.cfg.microsoft_name, size=64)
+            if not path:
+                return
+            img = _load_ctk_image(Path(path), (36, 36))
+            if img:
+                self.after(0, lambda: self.head_label.configure(image=img, text=""))
+                self._head_image = img
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _toggle_accounts_menu(self) -> None:
+        if self._accounts_popup and self._accounts_popup.winfo_exists():
+            self._accounts_popup.destroy()
+            self._accounts_popup = None
+            return
+        pop = ctk.CTkToplevel(self)
+        pop.withdraw()
+        pop.overrideredirect(True)
+        pop.configure(fg_color=COLORS["panel"])
+        self._accounts_popup = pop
+        frame = ctk.CTkFrame(pop, fg_color=COLORS["panel"], corner_radius=10)
+        frame.pack(fill="both", expand=True, padx=1, pady=1)
+
+        for acc in self.cfg.saved_accounts or []:
+            name = acc.get("name") or "?"
+            is_current = name == self.cfg.microsoft_name
+
+            def make_cmd(a=acc):
+                return lambda: self._select_account(a)
+
+            ctk.CTkButton(
+                frame,
+                text=("● " if is_current else "○ ") + name,
+                anchor="w",
+                height=34,
+                fg_color=COLORS["panel_soft"] if is_current else "transparent",
+                hover_color=COLORS["stroke"],
+                text_color=COLORS["accent"] if is_current else COLORS["text"],
+                command=make_cmd(),
+            ).pack(fill="x", padx=6, pady=3)
+
+        ctk.CTkButton(
+            frame,
+            text="+  Adicionar conta",
+            anchor="w",
+            height=36,
+            fg_color="transparent",
+            hover_color=COLORS["stroke"],
+            text_color=COLORS["accent"],
+            command=self._add_account,
+        ).pack(fill="x", padx=6, pady=(6, 8))
+
+        self.update_idletasks()
+        x = self.btn_accounts.winfo_rootx()
+        y = self.btn_accounts.winfo_rooty() + self.btn_accounts.winfo_height() + 4
+        pop.geometry(f"220x{max(90, 40 * (len(self.cfg.saved_accounts or []) + 1))}+{x}+{y}")
+        pop.deiconify()
+        pop.focus_force()
+        pop.bind("<FocusOut>", lambda _e: pop.destroy())
+
+    def _select_account(self, account: dict) -> None:
+        if self._accounts_popup:
+            self._accounts_popup.destroy()
+            self._accounts_popup = None
+        switch_account(self.cfg, account)
+        self.cfg = LauncherConfig.load()
+        self._refresh_ms_profile()
+        self._refresh_skin()
+
+    def _add_account(self) -> None:
+        if self._accounts_popup:
+            self._accounts_popup.destroy()
+            self._accounts_popup = None
+        self._login_microsoft()
+
+    def _logout(self) -> None:
+        logout_microsoft(self.cfg, remove_current=True)
+        self.cfg = LauncherConfig.load()
+        if self._ms_logged_in():
+            self._refresh_ms_profile()
+            self._refresh_skin()
+        else:
+            self._refresh_ms_profile()
+            self._set_mode("offline")
+
     # ------------------------------------------------------------------ skin
     def _refresh_skin(self) -> None:
-        def job():
+        def worker():
             uuid = ""
             name = ""
             if self.auth_mode.get() == "microsoft" and self.cfg.microsoft_name:
@@ -491,51 +679,66 @@ class PUTsLauncherApp(ctk.CTk):
                 name = self.cfg.microsoft_name
             else:
                 name = self.nick_entry.get().strip() or "Steve"
-            path = fetch_skin_render(uuid=uuid, name=name, size=280)
-            return path, name
-
-        def worker():
-            try:
-                path, name = job()
-            except Exception:
-                return
-
-            def apply():
-                if not path:
-                    return
-                img = _load_ctk_image(Path(path), (180, 280))
-                if not img:
-                    return
-                self._skin_image = img
-                self.skin_label.configure(text="", image=img)
-                self.skin_name.configure(text=name)
-
-            self.after(0, apply)
+            path = fetch_skin_texture(uuid=uuid, name=name)
+            self.after(0, lambda: self.skin_viewer.set_texture(path))
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _change_skin(self) -> None:
+        if not self._ms_logged_in():
+            messagebox.showinfo("Mudar skin", "Faça login Microsoft para mudar a skin.")
+            return
+        path = filedialog.askopenfilename(
+            title="Escolha a skin (.png)",
+            filetypes=[("PNG", "*.png"), ("Todos", "*.*")],
+        )
+        if not path:
+            return
+        variant = "classic"
+        # Ask slim vs classic quickly
+        if messagebox.askyesno("Modelo", "É skin slim (Alex)?\n\nSim = slim\nNão = classic (Steve)"):
+            variant = "slim"
+
+        def job():
+            # Refresh token first if possible
+            token = self.cfg.microsoft_access_token
+            if self.cfg.microsoft_refresh_token:
+                try:
+                    session = refresh_microsoft_session(self.cfg)
+                    self.cfg = LauncherConfig.load()
+                    token = session.access_token
+                except Exception:
+                    pass
+            upload_skin(token, Path(path), variant=variant)
+            # Bust cache
+            from launcher.auth.skin import texture_cache_path
+
+            cached = texture_cache_path(self.cfg.microsoft_uuid or self.cfg.microsoft_name)
+            cached.unlink(missing_ok=True)
+            return True
+
+        def done(_ok, err):
+            if err:
+                messagebox.showerror("Mudar skin", str(err))
+                return
+            self._refresh_skin()
+            self._load_head()
+
+        self._run_bg(job, done, busy_text="SKIN…")
+
     # ------------------------------------------------------------------ auth
     def _show_device_code(self, user_code: str, verify_uri: str) -> None:
-        """Show Microsoft device-code instructions on the main thread."""
-
         def open_dialog():
             win = ctk.CTkToplevel(self)
             win.title("Login Microsoft")
             win.geometry("480x280")
             win.configure(fg_color=COLORS["bg1"])
             win.transient(self)
-            try:
-                win.grab_set()
-            except Exception:
-                pass
             frame = ctk.CTkFrame(win, fg_color="transparent")
             frame.pack(fill="both", expand=True, padx=24, pady=24)
-            ctk.CTkLabel(
-                frame,
-                text="Entre com sua conta Microsoft",
-                font=FONTS["title"],
-                text_color=COLORS["accent"],
-            ).pack(anchor="w")
+            ctk.CTkLabel(frame, text="Entre com sua conta Microsoft", font=FONTS["title"], text_color=COLORS["accent"]).pack(
+                anchor="w"
+            )
             ctk.CTkLabel(
                 frame,
                 text=f"1. Abra {verify_uri}\n2. Digite o código abaixo\n3. Autorize e volte aqui",
@@ -544,12 +747,7 @@ class PUTsLauncherApp(ctk.CTk):
                 justify="left",
                 anchor="w",
             ).pack(fill="x", pady=(10, 16))
-            ctk.CTkLabel(
-                frame,
-                text=user_code,
-                font=("Consolas", 36, "bold"),
-                text_color=COLORS["accent"],
-            ).pack()
+            ctk.CTkLabel(frame, text=user_code, font=("Consolas", 36, "bold"), text_color=COLORS["accent"]).pack()
             ctk.CTkButton(
                 frame,
                 text="Abrir página de login",
@@ -564,7 +762,7 @@ class PUTsLauncherApp(ctk.CTk):
         self.after(0, open_dialog)
 
     def _close_device_code(self) -> None:
-        win = getattr(self, "_device_code_window", None)
+        win = self._device_code_window
         if win is not None:
             try:
                 win.destroy()
@@ -578,21 +776,19 @@ class PUTsLauncherApp(ctk.CTk):
         def job():
             return login_microsoft_browser(
                 self.cfg,
-                on_status=lambda msg: self.after(
-                    0, lambda: self.ms_status.configure(text=msg, text_color=COLORS["accent"])
-                ),
+                on_status=lambda _msg: None,
                 on_device_code=self._show_device_code,
             )
 
         def done(session: Optional[GameSession], err):
             self._close_device_code()
             if err:
-                self._set_status(str(err), ok=False)
-                self.ms_status.configure(text=str(err), text_color=COLORS["danger"])
+                messagebox.showerror("Microsoft", str(err))
                 return
             self.cfg = LauncherConfig.load()
-            self.ms_status.configure(text=self._ms_status_text(), text_color=COLORS["ok"])
-            self._set_status(f"Login OK — {session.username}")
+            self.auth_mode.set("microsoft")
+            self._set_mode("microsoft")
+            self._refresh_ms_profile()
             self._refresh_skin()
 
         self._run_bg(job, done, busy_text="LOGIN…")
@@ -610,15 +806,65 @@ class PUTsLauncherApp(ctk.CTk):
             return saved
         raise MicrosoftAuthError("Faça login Microsoft antes de jogar.")
 
-    # ------------------------------------------------------------------ actions
+    # ------------------------------------------------------------------ menus / actions
+    def _toggle_action_menu(self) -> None:
+        if self._menu_popup and self._menu_popup.winfo_exists():
+            self._menu_popup.destroy()
+            self._menu_popup = None
+            return
+        pop = ctk.CTkToplevel(self)
+        pop.withdraw()
+        pop.overrideredirect(True)
+        pop.configure(fg_color=COLORS["panel"])
+        self._menu_popup = pop
+        frame = ctk.CTkFrame(pop, fg_color=COLORS["panel"], corner_radius=10)
+        frame.pack(fill="both", expand=True, padx=1, pady=1)
+        ctk.CTkButton(
+            frame,
+            text="Reinstalar",
+            anchor="w",
+            height=38,
+            fg_color="transparent",
+            hover_color=COLORS["stroke"],
+            text_color=COLORS["text"],
+            command=self._reinstall,
+        ).pack(fill="x", padx=6, pady=4)
+        ctk.CTkButton(
+            frame,
+            text="Desinstalar",
+            anchor="w",
+            height=38,
+            fg_color="transparent",
+            hover_color=COLORS["stroke"],
+            text_color=COLORS["danger"],
+            command=self._uninstall,
+        ).pack(fill="x", padx=6, pady=(0, 6))
+        self.update_idletasks()
+        x = self.menu_btn.winfo_rootx() - 120
+        y = self.menu_btn.winfo_rooty() - 90
+        pop.geometry(f"170x95+{x}+{y}")
+        pop.deiconify()
+        pop.focus_force()
+        pop.bind("<FocusOut>", lambda _e: pop.destroy())
+
     def _on_action(self) -> None:
         if is_game_ready() and not self._downloading:
             self._play()
         else:
             self._download()
 
-    def _download(self) -> None:
+    def _cancel_action(self) -> None:
+        self._cancel.set()
+        if self._game_proc and self._game_proc.poll() is None:
+            try:
+                self._game_proc.terminate()
+            except Exception:
+                pass
+        self.detail_label.configure(text="Cancelando…")
+
+    def _download(self, force_reinstall: bool = False) -> None:
         self._save_form()
+        self._cancel.clear()
         self._downloading = True
         self._show_progress(True)
         self.progress.set(0)
@@ -628,56 +874,102 @@ class PUTsLauncherApp(ctk.CTk):
         self.eta_label.configure(text="Tempo restante: calculando…")
 
         def on_progress(state: ProgressState) -> None:
+            if self._cancel.is_set():
+                return
             self.after(0, lambda s=state: self._set_progress_ui(s))
 
         def job():
-            tracker = ProgressTracker(
-                {"java": 0.20, "forge": 0.65, "mods": 0.15},
-                on_update=on_progress,
-            )
-            prepare_game(self.cfg, tracker=tracker)
+            tracker = ProgressTracker({"java": 0.20, "forge": 0.65, "mods": 0.15}, on_update=on_progress)
+            if force_reinstall:
+                reinstall_game(self.cfg, tracker=tracker, cancel_event=self._cancel)
+            else:
+                prepare_game(self.cfg, tracker=tracker, cancel_event=self._cancel)
+            if self._cancel.is_set():
+                raise CancelledError("Download cancelado.")
             sync_mods(tracker=tracker)
             return True
 
         def done(_ok, err):
             self._downloading = False
+            if isinstance(err, CancelledError) or self._cancel.is_set():
+                self.progress_title.configure(text="Cancelado")
+                self.detail_label.configure(text="Download cancelado.")
+                self.after(600, lambda: self._show_progress(False))
+                self._refresh_ready_state()
+                return
             if err:
-                self._set_status(str(err), ok=False)
-                self.progress_title.configure(text="Erro no download")
+                messagebox.showerror("Download", str(err))
+                self.progress_title.configure(text="Erro")
                 self.detail_label.configure(text=str(err))
+                self._refresh_ready_state()
                 return
             self.progress.set(1)
             self.percent_label.configure(text="100%")
             self.progress_title.configure(text="Download concluído")
-            self.detail_label.configure(text="Tudo pronto — clique em JOGAR")
+            self.detail_label.configure(text="Pronto — clique em JOGAR")
             self.eta_label.configure(text="Tempo restante: 0s")
-            self._set_status("Download concluído!")
-            self.after(800, lambda: self._show_progress(False))
+            self.after(700, lambda: self._show_progress(False))
             self._refresh_ready_state()
 
         self._run_bg(job, done, busy_text="BAIXANDO…")
 
     def _play(self) -> None:
         self._save_form()
+        self._cancel.clear()
+        self._show_progress(True)
+        self.progress_title.configure(text="Abrindo")
+        self.detail_label.configure(text="Preparando jogo…")
+        self.percent_label.configure(text="…")
+        self.eta_label.configure(text="")
 
         def job():
-            # Silent ensure (already downloaded) + launch
             tracker = ProgressTracker(DEFAULT_PHASES)
             session = self._resolve_session()
-            return prepare_and_launch(self.cfg, session, tracker=tracker)
+            return prepare_and_launch(self.cfg, session, tracker=tracker, cancel_event=self._cancel)
 
-        def done(_proc, err):
+        def done(proc, err):
+            if isinstance(err, CancelledError) or self._cancel.is_set():
+                self._show_progress(False)
+                return
             if err:
-                self._set_status(str(err), ok=False)
-                # If somehow incomplete, flip back to Baixar
+                messagebox.showerror("Jogar", str(err))
+                self._show_progress(False)
                 if not is_game_ready():
                     self._refresh_ready_state()
                 return
-            self._set_status("Minecraft iniciado. Bom SMP!")
+            self._game_proc = proc
+            self._show_progress(False)
             if self.cfg.close_launcher_on_start:
-                self.after(900, self.destroy)
+                self.after(700, self.destroy)
 
         self._run_bg(job, done, busy_text="ABRINDO…")
+
+    def _reinstall(self) -> None:
+        if self._menu_popup:
+            self._menu_popup.destroy()
+            self._menu_popup = None
+        if not messagebox.askyesno("Reinstalar", "Apagar e baixar de novo Java/Minecraft/Forge?"):
+            return
+        self._download(force_reinstall=True)
+
+    def _uninstall(self) -> None:
+        if self._menu_popup:
+            self._menu_popup.destroy()
+            self._menu_popup = None
+        if not messagebox.askyesno("Desinstalar", f"Apagar os arquivos em\n{puts_home() / 'minecraft'}?"):
+            return
+
+        def job():
+            uninstall_game()
+            return True
+
+        def done(_ok, err):
+            if err:
+                messagebox.showerror("Desinstalar", str(err))
+                return
+            self._refresh_ready_state()
+
+        self._run_bg(job, done, busy_text="…")
 
 
 def run_app() -> None:
