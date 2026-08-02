@@ -110,8 +110,8 @@ class PUTsLauncherApp(ctk.CTk):
         self._cancel = threading.Event()
         self._game_proc = None
         self._head_image: Optional[ctk.CTkImage] = None
-        self._logo_image = _load_ctk_image(asset_path("logo_square.png"), (78, 78)) or _load_ctk_image(
-            asset_path("maracuja_256.png"), (78, 78)
+        self._logo_image = _load_ctk_image(asset_path("logo_transparent.png"), (88, 88)) or _load_ctk_image(
+            asset_path("logo_square.png"), (88, 88)
         )
         self._ms_image = _load_ctk_image(asset_path("microsoft.png"), (18, 18))
         self._backdrop_label = None
@@ -146,19 +146,19 @@ class PUTsLauncherApp(ctk.CTk):
         brand.grid(row=0, column=0, sticky="ew", padx=42, pady=(32, 6))
         brand.grid_columnconfigure(1, weight=1)
 
-        # Logo = open MinecraftPUTS folder
+        # Logo = open MinecraftPUTS folder (transparent fruit, no crop mask)
         self.logo_btn = ctk.CTkButton(
             brand,
             text="",
             image=self._logo_image,
-            width=86,
-            height=86,
-            corner_radius=14,
-            fg_color=COLORS["panel"],
-            hover_color=COLORS["panel_soft"],
+            width=92,
+            height=92,
+            corner_radius=18,
+            fg_color="transparent",
+            hover_color=COLORS["panel"],
             command=lambda: _open_path(puts_home()),
         )
-        self.logo_btn.grid(row=0, column=0, rowspan=2, padx=(0, 16))
+        self.logo_btn.grid(row=0, column=0, rowspan=2, padx=(0, 14))
 
         ctk.CTkLabel(brand, text="PUTs", font=FONTS["display"], text_color=COLORS["accent"], anchor="w").grid(
             row=0, column=1, sticky="sw"
@@ -257,46 +257,41 @@ class PUTsLauncherApp(ctk.CTk):
         )
         self.btn_ms_login.grid(row=0, column=0, sticky="ew")
 
-        self.profile_chip = ctk.CTkFrame(self.ms_wrap, fg_color=COLORS["panel"], corner_radius=12)
+        self.profile_chip = ctk.CTkFrame(self.ms_wrap, fg_color=COLORS["panel"], corner_radius=14)
         self.profile_chip.grid(row=1, column=0, sticky="ew")
         self.profile_chip.grid_columnconfigure(1, weight=1)
         self.profile_chip.grid_remove()
+        # Whole chip opens account menu (except logout)
+        self.profile_chip.bind("<Button-1>", lambda _e: self._toggle_accounts_menu())
 
-        self.head_label = ctk.CTkLabel(self.profile_chip, text="", width=40, height=40)
+        self.head_label = ctk.CTkLabel(self.profile_chip, text="", width=40, height=40, cursor="hand2")
         self.head_label.grid(row=0, column=0, padx=(10, 8), pady=8)
+        self.head_label.bind("<Button-1>", lambda _e: self._toggle_accounts_menu())
 
         self.profile_name = ctk.CTkLabel(
-            self.profile_chip, text="", font=FONTS["body_bold"], text_color=COLORS["text"], anchor="w"
+            self.profile_chip,
+            text="",
+            font=FONTS["body_bold"],
+            text_color=COLORS["text"],
+            anchor="w",
+            cursor="hand2",
         )
         self.profile_name.grid(row=0, column=1, sticky="ew")
-
-        self.btn_accounts = ctk.CTkButton(
-            self.profile_chip,
-            text="▾",
-            width=34,
-            height=34,
-            corner_radius=8,
-            font=FONTS["body_bold"],
-            fg_color=COLORS["panel_soft"],
-            hover_color=COLORS["stroke"],
-            text_color=COLORS["accent"],
-            command=self._toggle_accounts_menu,
-        )
-        self.btn_accounts.grid(row=0, column=2, padx=(6, 6))
+        self.profile_name.bind("<Button-1>", lambda _e: self._toggle_accounts_menu())
 
         self.btn_logout = ctk.CTkButton(
             self.profile_chip,
             text="Log out",
             width=78,
             height=34,
-            corner_radius=8,
+            corner_radius=10,
             font=FONTS["small"],
             fg_color=COLORS["berry"],
             hover_color="#a04838",
             text_color=COLORS["cream"],
             command=self._logout,
         )
-        self.btn_logout.grid(row=0, column=3, padx=(0, 10))
+        self.btn_logout.grid(row=0, column=2, padx=(8, 10), pady=8)
 
         # RAM
         ram = ctk.CTkFrame(left, fg_color="transparent")
@@ -427,8 +422,8 @@ class PUTsLauncherApp(ctk.CTk):
         self.skin_stage = ctk.CTkFrame(right, fg_color=COLORS["panel"], corner_radius=24)
         self.skin_stage.grid(row=1, column=0, sticky="nsew", padx=32, pady=(0, 12))
 
-        self.skin_viewer = Skin3DViewer(self.skin_stage, width=240, height=380, bg=COLORS["panel"])
-        self.skin_viewer.pack(expand=True, fill="both", padx=16, pady=16)
+        self.skin_viewer = Skin3DViewer(self.skin_stage, width=280, height=440, bg=COLORS["panel"])
+        self.skin_viewer.pack(expand=True, fill="both", padx=12, pady=12)
 
         self.btn_change_skin = ctk.CTkButton(
             right,
@@ -603,9 +598,13 @@ class PUTsLauncherApp(ctk.CTk):
         pop.withdraw()
         pop.overrideredirect(True)
         pop.configure(fg_color=COLORS["panel"])
+        try:
+            pop.attributes("-alpha", 0.0)
+        except Exception:
+            pass
         self._accounts_popup = pop
-        frame = ctk.CTkFrame(pop, fg_color=COLORS["panel"], corner_radius=10)
-        frame.pack(fill="both", expand=True, padx=1, pady=1)
+        frame = ctk.CTkFrame(pop, fg_color=COLORS["panel"], corner_radius=16)
+        frame.pack(fill="both", expand=True, padx=2, pady=2)
 
         for acc in self.cfg.saved_accounts or []:
             name = acc.get("name") or "?"
@@ -616,47 +615,85 @@ class PUTsLauncherApp(ctk.CTk):
 
             ctk.CTkButton(
                 frame,
-                text=("● " if is_current else "○ ") + name,
+                text=("●  " if is_current else "○  ") + name,
                 anchor="w",
-                height=34,
+                height=36,
+                corner_radius=12,
                 fg_color=COLORS["panel_soft"] if is_current else "transparent",
                 hover_color=COLORS["stroke"],
                 text_color=COLORS["accent"] if is_current else COLORS["text"],
                 command=make_cmd(),
-            ).pack(fill="x", padx=6, pady=3)
+            ).pack(fill="x", padx=8, pady=4)
 
         ctk.CTkButton(
             frame,
             text="+  Adicionar conta",
-            anchor="w",
-            height=36,
-            fg_color="transparent",
-            hover_color=COLORS["stroke"],
-            text_color=COLORS["accent"],
+            anchor="center",
+            height=40,
+            corner_radius=14,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hot"],
+            text_color=COLORS["accent_text"],
+            font=FONTS["body_bold"],
             command=self._add_account,
-        ).pack(fill="x", padx=6, pady=(6, 8))
+        ).pack(fill="x", padx=10, pady=(8, 10))
 
         self.update_idletasks()
-        x = self.btn_accounts.winfo_rootx()
-        y = self.btn_accounts.winfo_rooty() + self.btn_accounts.winfo_height() + 4
-        pop.geometry(f"220x{max(90, 40 * (len(self.cfg.saved_accounts or []) + 1))}+{x}+{y}")
+        x = self.profile_chip.winfo_rootx()
+        y = self.profile_chip.winfo_rooty() + self.profile_chip.winfo_height() + 6
+        w = max(240, self.profile_chip.winfo_width())
+        h = max(100, 44 * (len(self.cfg.saved_accounts or []) + 1) + 24)
+        pop.geometry(f"{w}x{h}+{x}+{y}")
         pop.deiconify()
         pop.focus_force()
-        pop.bind("<FocusOut>", lambda _e: pop.destroy())
+        pop.bind("<FocusOut>", lambda _e: self._fade_out_accounts())
+
+        # Fade-in
+        def fade(step: int = 0) -> None:
+            if not pop.winfo_exists():
+                return
+            try:
+                pop.attributes("-alpha", min(1.0, step / 10))
+            except Exception:
+                return
+            if step < 10:
+                pop.after(18, lambda: fade(step + 1))
+
+        fade(0)
+
+    def _fade_out_accounts(self) -> None:
+        pop = self._accounts_popup
+        if not pop or not pop.winfo_exists():
+            self._accounts_popup = None
+            return
+
+        def fade(step: int = 10) -> None:
+            if not pop.winfo_exists():
+                self._accounts_popup = None
+                return
+            try:
+                pop.attributes("-alpha", max(0.0, step / 10))
+            except Exception:
+                pop.destroy()
+                self._accounts_popup = None
+                return
+            if step <= 0:
+                pop.destroy()
+                self._accounts_popup = None
+            else:
+                pop.after(16, lambda: fade(step - 1))
+
+        fade(10)
 
     def _select_account(self, account: dict) -> None:
-        if self._accounts_popup:
-            self._accounts_popup.destroy()
-            self._accounts_popup = None
+        self._fade_out_accounts()
         switch_account(self.cfg, account)
         self.cfg = LauncherConfig.load()
         self._refresh_ms_profile()
         self._refresh_skin()
 
     def _add_account(self) -> None:
-        if self._accounts_popup:
-            self._accounts_popup.destroy()
-            self._accounts_popup = None
+        self._fade_out_accounts()
         self._login_microsoft()
 
     def _logout(self) -> None:
