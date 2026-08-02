@@ -43,42 +43,40 @@ def _uvs(u: int, v: int, w: int, h: int, d: int) -> dict[str, tuple[int, int, in
 
 
 def _box_faces(cx, cy, cz, sx, sy, sz, u, v, w, h, d):
-    """Cube faces with CCW winding when viewed from outside (outward normals)."""
     hx, hy, hz = sx / 2, sy / 2, sz / 2
     uv = _uvs(u, v, w, h, d)
-    # Each face: TL, BL, BR, TR from the outside view → two tris share correct UV
     corners = {
-        "front": [  # +Z
+        "front": [
             (cx - hx, cy + hy, cz + hz),
             (cx - hx, cy - hy, cz + hz),
             (cx + hx, cy - hy, cz + hz),
             (cx + hx, cy + hy, cz + hz),
         ],
-        "back": [  # -Z
+        "back": [
             (cx + hx, cy + hy, cz - hz),
             (cx + hx, cy - hy, cz - hz),
             (cx - hx, cy - hy, cz - hz),
             (cx - hx, cy + hy, cz - hz),
         ],
-        "right": [  # +X
+        "right": [
             (cx + hx, cy + hy, cz + hz),
             (cx + hx, cy - hy, cz + hz),
             (cx + hx, cy - hy, cz - hz),
             (cx + hx, cy + hy, cz - hz),
         ],
-        "left": [  # -X
+        "left": [
             (cx - hx, cy + hy, cz - hz),
             (cx - hx, cy - hy, cz - hz),
             (cx - hx, cy - hy, cz + hz),
             (cx - hx, cy + hy, cz + hz),
         ],
-        "top": [  # +Y
+        "top": [
             (cx - hx, cy + hy, cz - hz),
             (cx - hx, cy + hy, cz + hz),
             (cx + hx, cy + hy, cz + hz),
             (cx + hx, cy + hy, cz - hz),
         ],
-        "bottom": [  # -Y
+        "bottom": [
             (cx - hx, cy - hy, cz + hz),
             (cx - hx, cy - hy, cz - hz),
             (cx + hx, cy - hy, cz - hz),
@@ -89,31 +87,21 @@ def _box_faces(cx, cy, cz, sx, sy, sz, u, v, w, h, d):
     return [(corners[n], uv[n], shade[n]) for n in corners]
 
 
-def _model_faces():
-    # Minecraft pixel units; origin at feet, +Y up, +Z forward
-    return (
-        _box_faces(-2, 6, 0, 4, 12, 4, 0, 16, 4, 12, 4)  # right leg
-        + _box_faces(2, 6, 0, 4, 12, 4, 16, 48, 4, 12, 4)  # left leg
-        + _box_faces(0, 18, 0, 8, 12, 4, 16, 16, 8, 12, 4)  # body
-        + _box_faces(-6, 18, 0, 4, 12, 4, 40, 16, 4, 12, 4)  # right arm
-        + _box_faces(6, 18, 0, 4, 12, 4, 32, 48, 4, 12, 4)  # left arm
-        + _box_faces(0, 28, 0, 8, 8, 8, 0, 0, 8, 8, 8)  # head
-        + _box_faces(0, 28, 0, 8.75, 8.75, 8.75, 32, 0, 8, 8, 8)  # hat
-    )
+# Precomputed once — avoids rebuilding cubes every frame
+_MODEL_FACES = (
+    _box_faces(-2, 6, 0, 4, 12, 4, 0, 16, 4, 12, 4)
+    + _box_faces(2, 6, 0, 4, 12, 4, 16, 48, 4, 12, 4)
+    + _box_faces(0, 18, 0, 8, 12, 4, 16, 16, 8, 12, 4)
+    + _box_faces(-6, 18, 0, 4, 12, 4, 40, 16, 4, 12, 4)
+    + _box_faces(6, 18, 0, 4, 12, 4, 32, 48, 4, 12, 4)
+    + _box_faces(0, 28, 0, 8, 8, 8, 0, 0, 8, 8, 8)
+    + _box_faces(0, 28, 0, 8.75, 8.75, 8.75, 32, 0, 8, 8, 8)
+)
+
+_FACE_UV = ((0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0))
 
 
-def _raster_tri(
-    zbuf: np.ndarray,
-    color: np.ndarray,
-    p0,
-    p1,
-    p2,
-    uv0,
-    uv1,
-    uv2,
-    tex: np.ndarray,
-    shade: float,
-) -> None:
+def _raster_tri(zbuf, color, p0, p1, p2, uv0, uv1, uv2, tex, shade: float) -> None:
     h, w = zbuf.shape
     minx = max(0, int(math.floor(min(p0[0], p1[0], p2[0]))))
     maxx = min(w - 1, int(math.ceil(max(p0[0], p1[0], p2[0]))))
@@ -128,10 +116,9 @@ def _raster_tri(
 
     xs = np.arange(minx, maxx + 1, dtype=np.float32) + 0.5
     ys = np.arange(miny, maxy + 1, dtype=np.float32) + 0.5
-    xx, yy = np.meshgrid(xs, ys)
+    xx, yy = np.meshgrid(xs, ys, indexing="xy")
 
     def edge(ax, ay, bx, by, px, py):
-        # (B-A) × (P-A) — must match area = (p1-p0)×(p2-p0)
         return (bx - ax) * (py - ay) - (by - ay) * (px - ax)
 
     w0 = edge(p1[0], p1[1], p2[0], p2[1], xx, yy) / area
@@ -141,7 +128,6 @@ def _raster_tri(
     if not np.any(mask):
         return
 
-    # Larger camera-Z = closer to camera
     z = w0 * p0[2] + w1 * p1[2] + w2 * p2[2]
     zview = zbuf[miny : maxy + 1, minx : maxx + 1]
     cview = color[miny : maxy + 1, minx : maxx + 1]
@@ -167,43 +153,46 @@ def _raster_tri(
     cview[visible] = out[visible]
 
 
-# Face UV corners matching TL, BL, BR, TR vertex order
-_FACE_UV = ((0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0))
+def _prep_faces(tex: np.ndarray) -> list[tuple]:
+    """Slice face textures once per skin load (no per-frame Pillow resize)."""
+    prepared = []
+    for verts, (u0, v0, uw, vh), shade in _MODEL_FACES:
+        face = tex[v0 : v0 + vh, u0 : u0 + uw]
+        if face.size == 0:
+            continue
+        prepared.append((verts, face, shade))
+    return prepared
 
 
 def render_skin_frame(
-    texture: Image.Image,
+    faces: list[tuple],
     yaw_deg: float = 35.0,
+    pitch_deg: float = -12.0,
     out_w: int = 280,
     out_h: int = 420,
+    max_pix: int = 55_000,
 ) -> Image.Image:
-    tex_img = _normalize_skin(texture)
-    tex = np.asarray(tex_img, dtype=np.uint8)
-
-    # Render at panel size (cap pixels for FPS), then nearest-upscale to fill.
-    max_pix = 120_000
     aspect = out_w / max(out_h, 1)
     H = int(math.sqrt(max_pix / max(aspect, 0.2)))
-    W = max(64, int(H * aspect))
-    H = max(96, H)
+    W = max(48, int(H * aspect))
+    H = max(72, H)
     if W * H > max_pix:
         f = math.sqrt(max_pix / (W * H))
-        W = max(64, int(W * f))
-        H = max(96, int(H * f))
+        W = max(48, int(W * f))
+        H = max(72, int(H * f))
 
-    # Model spans ~16 wide × 32 tall; fill ~92% of the render buffer
-    scale = min((W * 0.92) / 16.0, (H * 0.92) / 32.0)
+    scale = min((W * 0.90) / 16.0, (H * 0.90) / 32.0)
     zbuf = np.full((H, W), -1e9, dtype=np.float32)
     color = np.zeros((H, W, 4), dtype=np.uint8)
 
     yaw = math.radians(yaw_deg)
-    pitch = math.radians(-10)
+    pitch = math.radians(pitch_deg)
     cy, sy = math.cos(yaw), math.sin(yaw)
     cp, sp = math.cos(pitch), math.sin(pitch)
     cx_s = W * 0.5
-    cy_s = H * 0.5 + scale * 16.0  # center body in frame
+    cy_s = H * 0.5 + scale * 16.0
 
-    for verts, (u0, v0, uw, vh), shade in _model_faces():
+    for verts, face, shade in faces:
         tv = []
         for x, y, z in verts:
             x, y, z = _rot_y(x, y, z, cy, sy)
@@ -213,41 +202,25 @@ def render_skin_frame(
         ax, ay, az = tv[1][0] - tv[0][0], tv[1][1] - tv[0][1], tv[1][2] - tv[0][2]
         bx, by, bz = tv[3][0] - tv[0][0], tv[3][1] - tv[0][1], tv[3][2] - tv[0][2]
         nx = ay * bz - az * by
-        ny = az * bx - ax * bz
         nz = ax * by - ay * bx
-        ln = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
+        ln = math.sqrt(nx * nx + (az * bx - ax * bz) ** 2 + nz * nz) or 1.0
         nz /= ln
-        # Camera looks toward -Z in view space after projection using +z as depth;
-        # faces with nz <= 0 point away from camera.
         if nz <= 0.01:
             continue
 
         pts = [(cx_s + p[0] * scale, cy_s - p[1] * scale, p[2]) for p in tv]
-        face = tex[v0 : v0 + vh, u0 : u0 + uw]
-        if face.size == 0:
-            continue
-        # Upsample face texels once for smoother sampling without per-pixel cost blowup
-        face_up = np.asarray(
-            Image.fromarray(face, "RGBA").resize((max(uw * 3, 3), max(vh * 3, 3)), Image.Resampling.NEAREST),
-            dtype=np.uint8,
-        )
         lit = shade * (0.55 + 0.45 * max(0.0, nz))
         uvs = _FACE_UV
-        # tris: TL-BL-BR and TL-BR-TR
-        _raster_tri(zbuf, color, pts[0], pts[1], pts[2], uvs[0], uvs[1], uvs[2], face_up, lit)
-        _raster_tri(zbuf, color, pts[0], pts[2], pts[3], uvs[0], uvs[2], uvs[3], face_up, lit)
+        _raster_tri(zbuf, color, pts[0], pts[1], pts[2], uvs[0], uvs[1], uvs[2], face, lit)
+        _raster_tri(zbuf, color, pts[0], pts[2], pts[3], uvs[0], uvs[2], uvs[3], face, lit)
 
     frame = Image.fromarray(color, "RGBA")
-    # Crop transparent margins so the figure fills the panel
     alpha = color[..., 3]
     ys, xs = np.where(alpha > 0)
     if len(xs) == 0:
         return Image.new("RGBA", (max(1, out_w), max(1, out_h)), (0, 0, 0, 0))
-    x0, x1 = int(xs.min()), int(xs.max()) + 1
-    y0, y1 = int(ys.min()), int(ys.max()) + 1
-    pad = 2
-    x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
-    x1, y1 = min(W, x1 + pad), min(H, y1 + pad)
+    x0, x1 = max(0, int(xs.min()) - 2), min(W, int(xs.max()) + 3)
+    y0, y1 = max(0, int(ys.min()) - 2), min(H, int(ys.max()) + 3)
     cropped = frame.crop((x0, y0, x1, y1))
     out = Image.new("RGBA", (max(1, out_w), max(1, out_h)), (0, 0, 0, 0))
     fit = min(out_w / cropped.size[0], out_h / cropped.size[1]) * 0.96
@@ -264,82 +237,120 @@ class Skin3DViewer(tk.Canvas):
         self._width = width
         self._height = height
         self._yaw = 28.0
-        self._texture: Optional[Image.Image] = None
+        self._pitch = -12.0
+        self._faces: list[tuple] = []
         self._photo: Optional[ImageTk.PhotoImage] = None
         self._drag_x: Optional[int] = None
+        self._drag_y: Optional[int] = None
         self._auto = True
         self._job = None
-        self._busy = False
+        self._drawing = False
         self._dirty = False
+        self._dragging = False
         self.bind("<ButtonPress-1>", self._on_press)
         self.bind("<B1-Motion>", self._on_drag)
         self.bind("<ButtonRelease-1>", self._on_release)
         self.bind("<Enter>", lambda _e: setattr(self, "_auto", False))
-        self.bind("<Leave>", lambda _e: setattr(self, "_auto", True))
+        self.bind("<Leave>", self._on_leave)
         self.bind("<Configure>", self._on_configure)
-        self.after(80, self._tick)
+        self.after(120, self._tick)
+
+    def _on_leave(self, _event) -> None:
+        if not self._dragging:
+            self._auto = True
 
     def _on_configure(self, event) -> None:
         w, h = max(80, event.width), max(120, event.height)
-        if abs(w - self._width) > 2 or abs(h - self._height) > 2:
+        if abs(w - self._width) > 4 or abs(h - self._height) > 4:
             self._width, self._height = w, h
             self._dirty = True
-            if self._texture is not None and not self._busy:
-                self.after_idle(self._redraw)
 
     def set_texture(self, path: Optional[Path]) -> None:
         if not path or not Path(path).exists():
-            self._texture = None
+            self._faces = []
             self.delete("all")
             self.create_text(self._width // 2, self._height // 2, text="Sem skin", fill="#b7a88a", font=("Segoe UI", 12))
             return
         try:
-            self._texture = Image.open(path).convert("RGBA")
+            tex = np.asarray(_normalize_skin(Image.open(path)), dtype=np.uint8)
+            self._faces = _prep_faces(tex)
         except Exception:
-            self._texture = None
+            self._faces = []
             return
-        self._redraw()
+        self._redraw(force_hq=True)
 
-    def _redraw(self) -> None:
-        if self._texture is None or self._busy:
+    def set_texture_image(self, image: Image.Image) -> None:
+        try:
+            tex = np.asarray(_normalize_skin(image), dtype=np.uint8)
+            self._faces = _prep_faces(tex)
+        except Exception:
+            self._faces = []
             return
-        self._busy = True
+        self._redraw(force_hq=True)
+
+    def _redraw(self, force_hq: bool = False) -> None:
+        if not self._faces or self._drawing:
+            if self._faces:
+                self._dirty = True
+            return
+        self._drawing = True
         self._dirty = False
         try:
-            frame = render_skin_frame(self._texture, yaw_deg=self._yaw, out_w=self._width, out_h=self._height)
+            # Lower res while dragging / auto-spin; higher when idle
+            max_pix = 90_000 if force_hq else (28_000 if self._dragging else 40_000)
+            frame = render_skin_frame(
+                self._faces,
+                yaw_deg=self._yaw,
+                pitch_deg=self._pitch,
+                out_w=self._width,
+                out_h=self._height,
+                max_pix=max_pix,
+            )
             self._photo = ImageTk.PhotoImage(frame)
             self.delete("all")
             self.create_image(0, 0, image=self._photo, anchor="nw")
             self.create_text(
-                self._width // 2, self._height - 14, text="arraste para girar", fill="#6e5f45", font=("Segoe UI", 9)
+                self._width // 2,
+                self._height - 14,
+                text="arraste para girar",
+                fill="#6e5f45",
+                font=("Segoe UI", 9),
             )
         finally:
-            self._busy = False
+            self._drawing = False
 
     def _on_press(self, event) -> None:
         self._drag_x = event.x
+        self._drag_y = event.y
+        self._dragging = True
         self._auto = False
 
     def _on_drag(self, event) -> None:
-        if self._drag_x is None:
+        if self._drag_x is None or self._drag_y is None:
             return
-        self._yaw = (self._yaw + (event.x - self._drag_x) * 0.9) % 360
+        self._yaw = (self._yaw + (event.x - self._drag_x) * 0.85) % 360
+        self._pitch = max(-60.0, min(60.0, self._pitch + (event.y - self._drag_y) * 0.55))
         self._drag_x = event.x
-        if not self._busy:
+        self._drag_y = event.y
+        self._dirty = True
+        if not self._drawing:
             self._redraw()
-        else:
-            self._dirty = True
 
     def _on_release(self, _event) -> None:
         self._drag_x = None
+        self._drag_y = None
+        was = self._dragging
+        self._dragging = False
+        if was:
+            self._redraw(force_hq=True)
 
     def _tick(self) -> None:
-        if self._dirty and self._texture is not None and not self._busy:
+        if self._dirty and self._faces and not self._drawing:
             self._redraw()
-        elif self._auto and self._texture is not None and not self._busy:
-            self._yaw = (self._yaw + 4.0) % 360
+        elif self._auto and self._faces and not self._drawing and not self._dragging:
+            self._yaw = (self._yaw + 3.0) % 360
             self._redraw()
-        self._job = self.after(140, self._tick)
+        self._job = self.after(180, self._tick)
 
     def destroy(self) -> None:
         if self._job is not None:
