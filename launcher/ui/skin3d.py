@@ -8,8 +8,9 @@ from typing import Optional
 import numpy as np
 from PIL import Image, ImageTk
 
-# Rotate around torso center so pitch/yaw don't orbit the feet
 _CENTER_Y = 16.0
+# Virtual camera distance for perspective-correct UVs (fixes warped/skewed textures)
+_CAM_DIST = 48.0
 
 
 def _normalize_skin(texture: Image.Image) -> Image.Image:
@@ -35,24 +36,25 @@ def _rot_x(x, y, z, c, s):
 
 
 def _uvs(u: int, v: int, w: int, h: int, d: int) -> dict[str, tuple[int, int, int, int]]:
+    # Mojang / skinview3d layout: right, front, left, back (first strip = character's right = -X)
     return {
         "top": (u + d, v, w, d),
         "bottom": (u + w + d, v, w, d),
-        "left": (u, v + d, d, h),
+        "right": (u, v + d, d, h),  # character's right (-X)
         "front": (u + d, v + d, w, h),
-        "right": (u + w + d, v + d, d, h),
+        "left": (u + w + d, v + d, d, h),  # character's left (+X)
         "back": (u + w + d * 2, v + d, w, h),
     }
 
 
-# Face UV corners TL→BL→BR→TR
-_FACE_UV = ((0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0))
+# Local face UV: TL, BL, BR, TR (v=0 at top of atlas slice)
+_UV_STD = ((0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0))
 
 
 def _box_faces(cx, cy, cz, sx, sy, sz, u, v, w, h, d):
-    """Cube faces, CCW from outside. UVs match vertex order."""
     hx, hy, hz = sx / 2, sy / 2, sz / 2
     uv = _uvs(u, v, w, h, d)
+    # Vertex order TL, BL, BR, TR — CCW from outside
     corners = {
         "front": [  # +Z
             (cx - hx, cy + hy, cz + hz),
@@ -66,25 +68,25 @@ def _box_faces(cx, cy, cz, sx, sy, sz, u, v, w, h, d):
             (cx - hx, cy - hy, cz - hz),
             (cx - hx, cy + hy, cz - hz),
         ],
-        "right": [  # +X
+        "left": [  # +X = character's left
             (cx + hx, cy + hy, cz + hz),
             (cx + hx, cy - hy, cz + hz),
             (cx + hx, cy - hy, cz - hz),
             (cx + hx, cy + hy, cz - hz),
         ],
-        "left": [  # -X
+        "right": [  # -X = character's right
             (cx - hx, cy + hy, cz - hz),
             (cx - hx, cy - hy, cz - hz),
             (cx - hx, cy - hy, cz + hz),
             (cx - hx, cy + hy, cz + hz),
         ],
-        "top": [  # +Y, CCW from outside (above)
+        "top": [
             (cx - hx, cy + hy, cz - hz),
             (cx - hx, cy + hy, cz + hz),
             (cx + hx, cy + hy, cz + hz),
             (cx + hx, cy + hy, cz - hz),
         ],
-        "bottom": [  # -Y, CCW from outside (below)
+        "bottom": [
             (cx - hx, cy - hy, cz + hz),
             (cx - hx, cy - hy, cz - hz),
             (cx + hx, cy - hy, cz - hz),
@@ -92,30 +94,30 @@ def _box_faces(cx, cy, cz, sx, sy, sz, u, v, w, h, d):
         ],
     }
     shade = {"front": 1.0, "back": 0.58, "left": 0.8, "right": 0.8, "top": 1.08, "bottom": 0.45}
-    # top verts backL,frontL,frontR,backR → v=0 at front (Minecraft)
     face_uv = {
-        "front": _FACE_UV,
-        "back": _FACE_UV,
-        "left": _FACE_UV,
-        "right": _FACE_UV,
+        "front": _UV_STD,
+        "back": _UV_STD,
+        "left": _UV_STD,
+        "right": _UV_STD,
+        # image-up → front (+Z)
         "top": ((0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (1.0, 1.0)),
         "bottom": ((0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)),
     }
-    return [(corners[n], uv[n], shade[n], face_uv[n]) for n in corners]
+    order = ("right", "left", "top", "bottom", "front", "back")
+    return [(corners[n], uv[n], shade[n], face_uv[n]) for n in order]
 
 
 def _model_faces(slim: bool = False):
-    """Steve (classic) or Alex (slim) proportions in Minecraft pixel units."""
     arm_w = 3 if slim else 4
     arm_uv_w = 3 if slim else 4
     return (
-        _box_faces(-2, 6, 0, 4, 12, 4, 0, 16, 4, 12, 4)  # right leg
-        + _box_faces(2, 6, 0, 4, 12, 4, 16, 48, 4, 12, 4)  # left leg
-        + _box_faces(0, 18, 0, 8, 12, 4, 16, 16, 8, 12, 4)  # body
-        + _box_faces(-(4 + arm_w / 2), 18, 0, arm_w, 12, 4, 40, 16, arm_uv_w, 12, 4)  # right arm
-        + _box_faces(4 + arm_w / 2, 18, 0, arm_w, 12, 4, 32, 48, arm_uv_w, 12, 4)  # left arm
-        + _box_faces(0, 28, 0, 8, 8, 8, 0, 0, 8, 8, 8)  # head
-        + _box_faces(0, 28, 0, 8.5, 8.5, 8.5, 32, 0, 8, 8, 8)  # hat
+        _box_faces(-2, 6, 0, 4, 12, 4, 0, 16, 4, 12, 4)
+        + _box_faces(2, 6, 0, 4, 12, 4, 16, 48, 4, 12, 4)
+        + _box_faces(0, 18, 0, 8, 12, 4, 16, 16, 8, 12, 4)
+        + _box_faces(-(4 + arm_w / 2), 18, 0, arm_w, 12, 4, 40, 16, arm_uv_w, 12, 4)
+        + _box_faces(4 + arm_w / 2, 18, 0, arm_w, 12, 4, 32, 48, arm_uv_w, 12, 4)
+        + _box_faces(0, 28, 0, 8, 8, 8, 0, 0, 8, 8, 8)
+        + _box_faces(0, 28, 0, 8.5, 8.5, 8.5, 32, 0, 8, 8, 8)
     )
 
 
@@ -153,11 +155,19 @@ def _raster_tri(zbuf, color, p0, p1, p2, uv0, uv1, uv2, tex, shade: float) -> No
     if not np.any(closer):
         return
 
+    # Perspective-correct UV (fixes face/shirt looking skewed to one side)
+    ez0 = max(0.05, _CAM_DIST - p0[2])
+    ez1 = max(0.05, _CAM_DIST - p1[2])
+    ez2 = max(0.05, _CAM_DIST - p2[2])
+    iw0, iw1, iw2 = 1.0 / ez0, 1.0 / ez1, 1.0 / ez2
+    inv_w = w0 * iw0 + w1 * iw1 + w2 * iw2
+    inv_w = np.where(np.abs(inv_w) < 1e-8, 1e-8, inv_w)
+    u = (w0 * iw0 * uv0[0] + w1 * iw1 * uv1[0] + w2 * iw2 * uv2[0]) / inv_w
+    v = (w0 * iw0 * uv0[1] + w1 * iw1 * uv1[1] + w2 * iw2 * uv2[1]) / inv_w
+
     th, tw = tex.shape[:2]
-    u = w0 * uv0[0] + w1 * uv1[0] + w2 * uv2[0]
-    v = w0 * uv0[1] + w1 * uv1[1] + w2 * uv2[1]
-    sx = np.clip((u * (tw - 1)).astype(np.int32), 0, tw - 1)
-    sy = np.clip((v * (th - 1)).astype(np.int32), 0, th - 1)
+    sx = np.clip((u * tw).astype(np.int32), 0, tw - 1)
+    sy = np.clip((v * th).astype(np.int32), 0, th - 1)
     sampled = tex[sy, sx]
     visible = closer & (sampled[..., 3] > 8)
     if not np.any(visible):
@@ -174,10 +184,9 @@ def _raster_tri(zbuf, color, p0, p1, p2, uv0, uv1, uv2, tex, shade: float) -> No
 def _prep_faces(tex: np.ndarray, slim: bool = False) -> list[tuple]:
     prepared = []
     for verts, (u0, v0, uw, vh), shade, face_uv in _model_faces(slim=slim):
-        face = tex[v0 : v0 + vh, u0 : u0 + uw]
+        face = np.ascontiguousarray(tex[v0 : v0 + vh, u0 : u0 + uw])
         if face.size == 0:
             continue
-        # Center verts once so every frame only rotates
         centered = [(x, y - _CENTER_Y, z) for x, y, z in verts]
         prepared.append((centered, face, shade, face_uv))
     return prepared
@@ -200,7 +209,6 @@ def render_skin_frame(
         W = max(48, int(W * f))
         H = max(72, int(H * f))
 
-    # Fixed orthographic scale — room for full 360° tumble without stretch/refit
     scale = min(W, H) * 0.50 / 16.0
     zbuf = np.full((H, W), -1e9, dtype=np.float32)
     color = np.zeros((H, W, 4), dtype=np.uint8)
@@ -358,7 +366,6 @@ class Skin3DViewer(tk.Canvas):
         if self._drag_x is None or self._drag_y is None:
             return
         self._yaw = (self._yaw + (event.x - self._drag_x) * 0.85) % 360
-        # Full 360° vertical tumble (same freedom as horizontal)
         self._pitch = (self._pitch + (event.y - self._drag_y) * 0.85) % 360
         self._drag_x = event.x
         self._drag_y = event.y

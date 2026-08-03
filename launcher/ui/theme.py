@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+from launcher.config import asset_path
+
 # Maracujá / dusk tropical — gold pulp on deep cocoa, not generic purple-AI.
 COLORS = {
     "bg0": "#0a0907",
@@ -21,6 +26,8 @@ COLORS = {
     "input_bg": "#100e0a",
     "input_border": "#5a4a28",
     "ms_blue": "#2f2f2f",
+    "disabled": "#3a3428",
+    "disabled_text": "#7a6e55",
 }
 
 FONTS = {
@@ -32,3 +39,40 @@ FONTS = {
     "tiny": ("Segoe UI", 11),
     "button": ("Georgia", 18, "bold"),
 }
+
+
+def register_fonts(root=None) -> str:
+    """Register Merchant Copy Doublesize for brand titles. Returns family name used."""
+    global FONTS
+    font_path = asset_path("MerchantCopy.ttf")
+    family = "Georgia"
+    if not font_path.exists():
+        return family
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            # FR_PRIVATE = 0x10 — load for this process only
+            ctypes.windll.gdi32.AddFontResourceExW(str(font_path), 0x10, 0)
+            family = "Merchant Copy Doublesize"
+        except Exception:
+            family = "Georgia"
+    else:
+        try:
+            if root is not None:
+                name = "PUTsMerchant"
+                try:
+                    root.tk.call("font", "delete", name)
+                except Exception:
+                    pass
+                root.tk.call("font", "create", name, "-file", str(font_path))
+                family = name
+            else:
+                family = "Georgia"
+        except Exception:
+            family = "Georgia"
+
+    FONTS["display"] = (family, 48, "bold")
+    FONTS["title"] = (family, 24, "bold")
+    return family
