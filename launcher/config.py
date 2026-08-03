@@ -94,6 +94,16 @@ class LauncherConfig:
     window_width: int = 854
     window_height: int = 480
     close_launcher_on_start: bool = True
+    # Performance / JVM options
+    use_vulkan: bool = False
+    use_g1gc: bool = True
+    use_modern_jvm_flags: bool = True
+    allocate_min_half_ram: bool = True
+    disable_vsync: bool = False
+    fullscreen: bool = False
+    use_string_dedup: bool = False
+    render_distance: int = 0  # 0 = don't override
+    extra_jvm_args: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod

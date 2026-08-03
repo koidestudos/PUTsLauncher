@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -22,28 +23,78 @@ DEFAULT_PHASES = {
 }
 
 
+def _jvm_arguments(cfg: LauncherConfig) -> list[str]:
+    ram_gb = max(1, min(int(cfg.ram_gb or 4), 32))
+    min_gb = max(1, ram_gb // 2) if getattr(cfg, "allocate_min_half_ram", True) else 1
+    args = [
+        f"-Xmx{ram_gb}G",
+        f"-Xms{min_gb}G",
+        "-Djava.net.preferIPv4Stack=true",
+        "-Dfml.ignoreInvalidMinecraftCertificates=true",
+        "-Dfml.ignorePatchDiscrepancies=true",
+    ]
+
+    if getattr(cfg, "use_g1gc", True):
+        args.extend(
+            [
+                "-XX:+UseG1GC",
+                "-XX:+ParallelRefProcEnabled",
+                "-XX:MaxGCPauseMillis=200",
+                "-XX:+UnlockExperimentalVMOptions",
+                "-XX:+DisableExplicitGC",
+                "-XX:G1NewSizePercent=30",
+                "-XX:G1MaxNewSizePercent=40",
+                "-XX:G1HeapRegionSize=8M",
+                "-XX:G1ReservePercent=20",
+                "-XX:InitiatingHeapOccupancyPercent=15",
+            ]
+        )
+
+    if getattr(cfg, "use_modern_jvm_flags", True):
+        args.extend(
+            [
+                "-XX:+AlwaysPreTouch",
+                "-XX:+PerfDisableSharedMem",
+                "-XX:MaxTenuringThreshold=1",
+            ]
+        )
+
+    if getattr(cfg, "use_g1gc", True) and getattr(cfg, "use_string_dedup", False):
+        args.append("-XX:+UseStringDeduplication")
+
+    # Sodium / Iris / canvas-friendly: request Vulkan via LWJGL (1.18.2 + modern drivers)
+    if getattr(cfg, "use_vulkan", False):
+        args.append("-Dorg.lwjgl.vulkan=true")
+        args.append("-Dorg.lwjgl.opengl.Display.enableNativeFullscreen=false")
+
+    if getattr(cfg, "disable_vsync", False):
+        args.append("-Dorg.lwjgl.opengl.Display.enableHighDPI=false")
+
+    extra = (getattr(cfg, "extra_jvm_args", "") or "").strip()
+    if extra:
+        try:
+            args.extend(shlex.split(extra, posix=os.name != "nt"))
+        except Exception:
+            args.extend(extra.split())
+
+    return args
+
+
 def build_launch_command(cfg: LauncherConfig, session: GameSession, java: str) -> list[str]:
     mc_dir = str(minecraft_dir())
-    ram_gb = max(1, min(int(cfg.ram_gb or 4), 32))
 
     options: mll.types.MinecraftOptions = {
         "username": session.username,
         "uuid": session.uuid,
         "token": session.access_token,
         "launcherName": "PUTsLauncher",
-        "launcherVersion": "1.1.0",
+        "launcherVersion": "1.3.0",
         "gameDirectory": mc_dir,
         "executablePath": java,
-        "jvmArguments": [
-            f"-Xmx{ram_gb}G",
-            f"-Xms{max(1, ram_gb // 2)}G",
-            "-Djava.net.preferIPv4Stack=true",
-            "-Dfml.ignoreInvalidMinecraftCertificates=true",
-            "-Dfml.ignorePatchDiscrepancies=true",
-        ],
+        "jvmArguments": _jvm_arguments(cfg),
     }
 
-    if cfg.window_width and cfg.window_height:
+    if cfg.window_width and cfg.window_height and not getattr(cfg, "fullscreen", False):
         options["customResolution"] = True
         options["resolutionWidth"] = str(cfg.window_width)
         options["resolutionHeight"] = str(cfg.window_height)

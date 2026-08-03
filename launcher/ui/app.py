@@ -49,7 +49,7 @@ from launcher.core import (
     uninstall_game,
 )
 from launcher.ui.skin3d import Skin3DViewer
-from launcher.ui.theme import COLORS, FONTS
+from launcher.ui.theme import COLORS, FONTS, register_fonts
 
 
 ctk.set_appearance_mode("dark")
@@ -111,6 +111,11 @@ class PUTsLauncherApp(ctk.CTk):
         self.geometry("1020x680")
         self.minsize(940, 620)
         self.configure(fg_color=COLORS["bg0"])
+        register_fonts(self)
+        self._accounts_open = False
+        self._skin_loading = False
+        self._options_win = None
+        self._variant_card = None
         self._busy = False
         self._downloading = False
         self._cancel = threading.Event()
@@ -299,33 +304,30 @@ class PUTsLauncherApp(ctk.CTk):
         )
         self.btn_logout.grid(row=0, column=1, padx=(4, 10), pady=8)
 
-        # RAM
-        ram = ctk.CTkFrame(left, fg_color="transparent")
-        ram.grid(row=5, column=0, sticky="ew", padx=42, pady=(16, 0))
-        ram.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(ram, text="Memória RAM", font=FONTS["small"], text_color=COLORS["muted"], anchor="w").grid(
-            row=0, column=0, sticky="w"
-        )
-        row = ctk.CTkFrame(ram, fg_color="transparent")
-        row.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        row.grid_columnconfigure(0, weight=1)
-        self.ram_slider = ctk.CTkSlider(
-            row,
-            from_=2,
-            to=16,
-            number_of_steps=14,
-            command=self._on_ram,
-            progress_color=COLORS["accent"],
-            button_color=COLORS["accent_hot"],
-            button_hover_color=COLORS["accent"],
+        # Expandable accounts list under profile chip (reliable vs floating popup)
+        self.accounts_panel = ctk.CTkFrame(self.ms_wrap, fg_color=COLORS["panel_soft"], corner_radius=14)
+        self.accounts_panel.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self.accounts_panel.grid_remove()
+
+        # Options (RAM + performance) replaces inline RAM slider
+        opts = ctk.CTkFrame(left, fg_color="transparent")
+        opts.grid(row=5, column=0, sticky="ew", padx=42, pady=(16, 0))
+        opts.grid_columnconfigure(0, weight=1)
+        self.btn_options = ctk.CTkButton(
+            opts,
+            text="⚙  Opções",
+            command=self._open_options,
+            height=44,
+            corner_radius=12,
+            font=FONTS["body_bold"],
             fg_color=COLORS["panel"],
+            hover_color=COLORS["panel_soft"],
+            text_color=COLORS["text"],
+            border_width=1,
+            border_color=COLORS["stroke"],
+            anchor="w",
         )
-        self.ram_slider.set(float(self.cfg.ram_gb or 4))
-        self.ram_slider.grid(row=0, column=0, sticky="ew")
-        self.ram_value = ctk.CTkLabel(
-            row, text=f"{int(self.cfg.ram_gb or 4)} GB", width=58, font=FONTS["body_bold"], text_color=COLORS["accent"]
-        )
-        self.ram_value.grid(row=0, column=1, padx=(12, 0))
+        self.btn_options.grid(row=0, column=0, sticky="ew")
 
         # Actions
         actions = ctk.CTkFrame(left, fg_color="transparent")
@@ -421,9 +423,9 @@ class PUTsLauncherApp(ctk.CTk):
         right.grid_rowconfigure(1, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(right, text="Sua skin", font=FONTS["title"], text_color=COLORS["cream"]).grid(
-            row=0, column=0, pady=(40, 8)
-        )
+        self.skin_title = ctk.CTkLabel(right, text="Sua skin", font=FONTS["title"], text_color=COLORS["cream"])
+        self.skin_title.grid(row=0, column=0, pady=(40, 8))
+        self.right_panel = right
 
         self.skin_stage = ctk.CTkFrame(right, fg_color=COLORS["panel"], corner_radius=24)
         self.skin_stage.grid(row=1, column=0, sticky="nsew", padx=28, pady=(0, 12))
@@ -432,6 +434,16 @@ class PUTsLauncherApp(ctk.CTk):
 
         self.skin_viewer = Skin3DViewer(self.skin_stage, width=320, height=520, bg=COLORS["panel"])
         self.skin_viewer.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+
+        # Loading / variant overlays sit on top of the skin stage
+        self.skin_load_overlay = ctk.CTkFrame(self.skin_stage, fg_color=COLORS["panel"], corner_radius=20)
+        self.skin_load_label = ctk.CTkLabel(
+            self.skin_load_overlay,
+            text="Carregando Skin…",
+            font=FONTS["title"],
+            text_color=COLORS["accent"],
+        )
+        self.skin_load_label.place(relx=0.5, rely=0.5, anchor="center")
 
         self.btn_change_skin = ctk.CTkButton(
             right,
@@ -497,7 +509,8 @@ class PUTsLauncherApp(ctk.CTk):
         self._refresh_skin()
 
     def _on_ram(self, value: float) -> None:
-        self.ram_value.configure(text=f"{int(round(value))} GB")
+        if getattr(self, "ram_value", None) is not None:
+            self.ram_value.configure(text=f"{int(round(value))} GB")
 
     def _refresh_ready_state(self) -> None:
         ready = is_game_ready()
@@ -540,7 +553,8 @@ class PUTsLauncherApp(ctk.CTk):
     def _save_form(self) -> None:
         self.cfg.auth_mode = self.auth_mode.get()
         self.cfg.username = self.nick_entry.get().strip() or "Steve"
-        self.cfg.ram_gb = int(round(self.ram_slider.get()))
+        if getattr(self, "ram_slider", None) is not None:
+            self.cfg.ram_gb = int(round(self.ram_slider.get()))
         self.cfg.save()
 
     def _run_bg(self, fn, on_done=None, busy_text: str = "…") -> None:
@@ -549,7 +563,12 @@ class PUTsLauncherApp(ctk.CTk):
 
         def worker():
             self._busy = True
-            self.after(0, lambda: self.action_btn.configure(state="disabled", text=busy_text))
+            def mark_busy():
+                if busy_text is None:
+                    self.action_btn.configure(state="disabled")
+                else:
+                    self.action_btn.configure(state="disabled", text=busy_text)
+            self.after(0, mark_busy)
             err = None
             result = None
             try:
@@ -577,7 +596,7 @@ class PUTsLauncherApp(ctk.CTk):
         if self._ms_logged_in():
             self.btn_ms_login.grid_remove()
             self.profile_chip.grid()
-            self.profile_btn.configure(text=f"  {self.cfg.microsoft_name}")
+            self.profile_btn.configure(text=f"  {self.cfg.microsoft_name}   ▾")
             self._load_head()
             self.btn_change_skin.configure(state="normal")
         else:
@@ -594,28 +613,26 @@ class PUTsLauncherApp(ctk.CTk):
             if img:
                 def apply():
                     self._head_image = img
-                    self.profile_btn.configure(image=img, text=f"  {self.cfg.microsoft_name}")
+                    self.profile_btn.configure(image=img, text=f"  {self.cfg.microsoft_name}   ▾")
 
                 self.after(0, apply)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _toggle_accounts_menu(self) -> None:
-        if self._accounts_popup and self._accounts_popup.winfo_exists():
+        if self._accounts_open:
             self._close_accounts_menu()
             return
+        self._rebuild_accounts_panel()
+        self.accounts_panel.grid()
+        self._accounts_open = True
+        self.accounts_panel.lift()
 
-        pop = ctk.CTkFrame(
-            self,
-            fg_color=COLORS["panel"],
-            corner_radius=16,
-            border_width=1,
-            border_color=COLORS["stroke"],
-        )
-        self._accounts_popup = pop
+    def _rebuild_accounts_panel(self) -> None:
+        for child in self.accounts_panel.winfo_children():
+            child.destroy()
 
         accounts = list(self.cfg.saved_accounts or [])
-        # Always show current account even if saved_accounts is empty/stale
         if self.cfg.microsoft_name and not any((a.get("name") == self.cfg.microsoft_name) for a in accounts):
             accounts = [
                 {
@@ -626,6 +643,14 @@ class PUTsLauncherApp(ctk.CTk):
                 }
             ] + accounts
 
+        ctk.CTkLabel(
+            self.accounts_panel,
+            text="Contas",
+            font=FONTS["small"],
+            text_color=COLORS["muted"],
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(10, 4))
+
         for acc in accounts:
             name = acc.get("name") or "?"
             is_current = name == self.cfg.microsoft_name
@@ -634,23 +659,23 @@ class PUTsLauncherApp(ctk.CTk):
                 return lambda: self._select_account(a)
 
             ctk.CTkButton(
-                pop,
+                self.accounts_panel,
                 text=("●  " if is_current else "○  ") + name,
                 anchor="w",
                 height=36,
-                corner_radius=12,
-                fg_color=COLORS["panel_soft"] if is_current else "transparent",
+                corner_radius=10,
+                fg_color=COLORS["panel"] if is_current else "transparent",
                 hover_color=COLORS["stroke"],
                 text_color=COLORS["accent"] if is_current else COLORS["text"],
                 command=make_cmd(),
-            ).pack(fill="x", padx=8, pady=4)
+            ).pack(fill="x", padx=8, pady=2)
 
         ctk.CTkButton(
-            pop,
+            self.accounts_panel,
             text="+  Adicionar conta",
             anchor="center",
             height=42,
-            corner_radius=14,
+            corner_radius=12,
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hot"],
             text_color=COLORS["accent_text"],
@@ -658,53 +683,16 @@ class PUTsLauncherApp(ctk.CTk):
             command=self._add_account,
         ).pack(fill="x", padx=10, pady=(8, 12))
 
-        self.update_idletasks()
-        x = self.profile_chip.winfo_rootx() - self.winfo_rootx()
-        y = self.profile_chip.winfo_rooty() - self.winfo_rooty() + self.profile_chip.winfo_height() + 6
-        w = max(260, self.profile_chip.winfo_width())
-        pop.place(x=max(8, x), y=y, width=w)
-        pop.lift()
-        try:
-            pop.tkraise()
-        except Exception:
-            pass
-
-        self._accounts_listen = False
-
-        def arm_listen():
-            self._accounts_listen = True
-
-        self.after(250, arm_listen)
-        if not getattr(self, "_accounts_root_bound", False):
-            self.bind("<Button-1>", self._on_root_click_accounts, add="+")
-            self._accounts_root_bound = True
-
     def _on_root_click_accounts(self, event) -> None:
-        if not getattr(self, "_accounts_listen", False):
-            return
-        pop = self._accounts_popup
-        if not pop or not pop.winfo_exists():
-            return
-        try:
-            widget = event.widget
-            w = widget
-            while w is not None:
-                if w in (pop, self.profile_chip, self.profile_btn):
-                    return
-                w = getattr(w, "master", None)
-        except Exception:
-            pass
-        self._close_accounts_menu()
+        return
 
     def _close_accounts_menu(self) -> None:
-        self._accounts_listen = False
-        pop = self._accounts_popup
+        self._accounts_open = False
+        try:
+            self.accounts_panel.grid_remove()
+        except Exception:
+            pass
         self._accounts_popup = None
-        if pop is not None:
-            try:
-                pop.destroy()
-            except Exception:
-                pass
 
     def _fade_out_accounts(self) -> None:
         self._close_accounts_menu()
@@ -759,119 +747,85 @@ class PUTsLauncherApp(ctk.CTk):
         self._show_skin_variant_picker(Path(path))
 
     def _show_skin_variant_picker(self, local: Path) -> None:
-        """In-window Slim/Classic tabs instead of a system Yes/No popup."""
-        if getattr(self, "_variant_overlay", None) and self._variant_overlay.winfo_exists():
-            self._variant_overlay.destroy()
-
-        overlay = ctk.CTkFrame(self, fg_color=COLORS["bg0"], corner_radius=0)
-        self._variant_overlay = overlay
-        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
-
-        # Dim backdrop
-        dim = ctk.CTkFrame(overlay, fg_color="#000000")
-        dim.place(relx=0, rely=0, relwidth=1, relheight=1)
+        """Animated Classic/Slim card inside the skin panel (semi-transparent backdrop)."""
+        self._close_variant_picker()
         try:
-            dim.configure(fg_color="#000000")
+            self.skin_viewer.set_texture(local, slim=False)
         except Exception:
             pass
+
+        # Dim skin stage (card sits over a darkened panel so the figure still peeks around)
+        overlay = ctk.CTkFrame(self.skin_stage, fg_color="#0c0a07", corner_radius=20)
+        self._variant_overlay = overlay
+        overlay.place(relx=0.04, rely=0.04, relwidth=0.92, relheight=0.92)
+        overlay.lift()
 
         card = ctk.CTkFrame(
             overlay,
             fg_color=COLORS["panel"],
-            corner_radius=20,
+            corner_radius=18,
             border_width=1,
-            border_color=COLORS["stroke"],
+            border_color=COLORS["accent_dim"],
+            width=300,
+            height=280,
         )
-        card.place(relx=0.5, rely=0.5, anchor="center")
+        self._variant_card = card
+        card.place(relx=0.5, rely=1.2, anchor="center")  # start below, animate up
+
+        # Close X
+        ctk.CTkButton(
+            card,
+            text="✕",
+            width=34,
+            height=34,
+            corner_radius=10,
+            fg_color="transparent",
+            hover_color=COLORS["berry"],
+            text_color=COLORS["muted"],
+            font=FONTS["body_bold"],
+            command=self._close_variant_picker,
+        ).place(relx=1.0, rely=0.0, x=-10, y=10, anchor="ne")
 
         inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(padx=28, pady=26)
+        inner.place(relx=0.5, rely=0.52, anchor="center", relwidth=0.88)
 
+        ctk.CTkLabel(inner, text="Modelo", font=FONTS["title"], text_color=COLORS["accent"]).pack(anchor="w")
         ctk.CTkLabel(
             inner,
-            text="Modelo da skin",
-            font=FONTS["title"],
-            text_color=COLORS["accent"],
-        ).pack(anchor="w")
-        ctk.CTkLabel(
-            inner,
-            text="Escolha o tipo do braço — Classic (Steve) ou Slim (Alex).",
+            text="Classic (Steve) ou Slim (Alex)",
             font=FONTS["small"],
             text_color=COLORS["muted"],
-        ).pack(anchor="w", pady=(4, 16))
+        ).pack(anchor="w", pady=(2, 14))
 
-        variant = ctk.StringVar(value="classic")
-
+        variant = ctk.StringVar(value="Classic")
         tabs = ctk.CTkSegmentedButton(
             inner,
             values=["Classic", "Slim"],
             variable=variant,
             font=FONTS["body_bold"],
-            height=42,
+            height=40,
             selected_color=COLORS["accent"],
             selected_hover_color=COLORS["accent_hot"],
             unselected_color=COLORS["panel_soft"],
             unselected_hover_color=COLORS["stroke"],
             text_color=COLORS["text"],
             fg_color=COLORS["bg1"],
+            command=lambda v: self.skin_viewer.set_slim(str(v).lower() == "slim"),
         )
         tabs.pack(fill="x")
         tabs.set("Classic")
 
-        # Live preview of the picked file while choosing
-        try:
-            self.skin_viewer.set_texture(local, slim=False)
-        except Exception:
-            pass
-
-        hint = ctk.CTkLabel(
-            inner,
-            text=local.name,
-            font=FONTS["tiny"],
-            text_color=COLORS["stroke"],
+        ctk.CTkLabel(inner, text=local.name, font=FONTS["tiny"], text_color=COLORS["stroke"]).pack(
+            anchor="w", pady=(12, 0)
         )
-        hint.pack(anchor="w", pady=(12, 0))
-
-        def _api_variant() -> str:
-            return "slim" if variant.get().lower() == "slim" else "classic"
-
-        def on_tabs(value: str) -> None:
-            variant.set(value)
-            self.skin_viewer.set_slim(value.lower() == "slim")
-
-        tabs.configure(command=on_tabs)
-
-        btns = ctk.CTkFrame(inner, fg_color="transparent")
-        btns.pack(fill="x", pady=(22, 0))
-        btns.grid_columnconfigure(0, weight=1)
-        btns.grid_columnconfigure(1, weight=1)
-
-        def close_picker():
-            try:
-                overlay.destroy()
-            except Exception:
-                pass
-            self._variant_overlay = None
 
         def confirm():
-            chosen = _api_variant()
-            close_picker()
+            chosen = "slim" if variant.get().lower() == "slim" else "classic"
+            self._close_variant_picker()
             self._upload_skin_file(local, chosen)
 
         ctk.CTkButton(
-            btns,
-            text="Cancelar",
-            height=42,
-            corner_radius=12,
-            font=FONTS["body_bold"],
-            fg_color=COLORS["panel_soft"],
-            hover_color=COLORS["stroke"],
-            text_color=COLORS["text"],
-            command=close_picker,
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-
-        ctk.CTkButton(
-            btns,
+            inner,
             text="Enviar skin",
             height=42,
             corner_radius=12,
@@ -880,12 +834,66 @@ class PUTsLauncherApp(ctk.CTk):
             hover_color=COLORS["accent_hot"],
             text_color=COLORS["accent_text"],
             command=confirm,
-        ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        ).pack(fill="x", pady=(18, 0))
 
-        # Approximate card width
-        card.configure(width=420)
+        # Slide + fade-ish animation
+        self._animate_variant_card(0.0)
+
+    def _animate_variant_card(self, t: float) -> None:
+        card = getattr(self, "_variant_card", None)
+        overlay = getattr(self, "_variant_overlay", None)
+        if not card or not card.winfo_exists():
+            return
+        # ease-out cubic
+        t = max(0.0, min(1.0, t))
+        e = 1 - (1 - t) ** 3
+        rely = 1.15 - 0.65 * e  # 1.15 → 0.50
+        try:
+            card.place_configure(relx=0.5, rely=rely, anchor="center")
+        except Exception:
+            return
+        if t < 1.0:
+            self.after(16, lambda: self._animate_variant_card(t + 0.07))
+
+    def _close_variant_picker(self) -> None:
+        for attr in ("_variant_overlay", "_variant_card"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
+    def _set_skin_loading(self, loading: bool) -> None:
+        self._skin_loading = loading
+        if loading:
+            self.skin_load_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self.skin_load_overlay.lift()
+            self.action_btn.configure(
+                state="disabled",
+                fg_color=COLORS["disabled"],
+                text_color=COLORS["disabled_text"],
+                hover_color=COLORS["disabled"],
+            )
+            self.menu_btn.configure(state="disabled")
+        else:
+            try:
+                self.skin_load_overlay.place_forget()
+            except Exception:
+                pass
+            self.action_btn.configure(
+                state="normal",
+                fg_color=COLORS["accent"],
+                text_color=COLORS["accent_text"],
+                hover_color=COLORS["accent_hot"],
+            )
+            self.menu_btn.configure(state="normal")
+            self._refresh_ready_state()
 
     def _upload_skin_file(self, local: Path, variant: str) -> None:
+        self._set_skin_loading(True)
+
         def job():
             token = self.cfg.microsoft_access_token
             if self.cfg.microsoft_refresh_token:
@@ -908,6 +916,7 @@ class PUTsLauncherApp(ctk.CTk):
             return str(cached), variant
 
         def done(result, err):
+            self._set_skin_loading(False)
             cached_path = None
             variant_used = variant
             if result and isinstance(result, tuple):
@@ -929,7 +938,204 @@ class PUTsLauncherApp(ctk.CTk):
                 self._refresh_skin(bust=True)
             self._load_head()
 
-        self._run_bg(job, done, busy_text="SKIN…")
+        self._run_bg(job, done, busy_text=None)
+
+    def _open_options(self) -> None:
+        if self._options_win and self._options_win.winfo_exists():
+            self._options_win.lift()
+            return
+
+        win = ctk.CTkToplevel(self)
+        self._options_win = win
+        win.title("Opções")
+        win.geometry("460x620")
+        win.configure(fg_color=COLORS["bg1"])
+        win.transient(self)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+
+        scroll = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=20, pady=20)
+
+        ctk.CTkLabel(scroll, text="Opções", font=FONTS["title"], text_color=COLORS["accent"]).pack(anchor="w")
+        ctk.CTkLabel(
+            scroll,
+            text="Memória, desempenho e comportamento do launcher.",
+            font=FONTS["small"],
+            text_color=COLORS["muted"],
+        ).pack(anchor="w", pady=(4, 16))
+
+        # RAM
+        ctk.CTkLabel(scroll, text="Memória RAM", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(anchor="w")
+        ram_row = ctk.CTkFrame(scroll, fg_color="transparent")
+        ram_row.pack(fill="x", pady=(6, 14))
+        ram_row.grid_columnconfigure(0, weight=1)
+        self.ram_slider = ctk.CTkSlider(
+            ram_row,
+            from_=2,
+            to=16,
+            number_of_steps=14,
+            command=self._on_ram,
+            progress_color=COLORS["accent"],
+            button_color=COLORS["accent_hot"],
+            button_hover_color=COLORS["accent"],
+            fg_color=COLORS["panel"],
+        )
+        self.ram_slider.set(float(self.cfg.ram_gb or 4))
+        self.ram_slider.grid(row=0, column=0, sticky="ew")
+        self.ram_value = ctk.CTkLabel(
+            ram_row,
+            text=f"{int(self.cfg.ram_gb or 4)} GB",
+            width=58,
+            font=FONTS["body_bold"],
+            text_color=COLORS["accent"],
+        )
+        self.ram_value.grid(row=0, column=1, padx=(12, 0))
+
+        def switch(label, attr, tip):
+            row = ctk.CTkFrame(scroll, fg_color=COLORS["panel"], corner_radius=12)
+            row.pack(fill="x", pady=5)
+            var = ctk.BooleanVar(value=bool(getattr(self.cfg, attr, False)))
+
+            def on_toggle():
+                setattr(self.cfg, attr, bool(var.get()))
+                self.cfg.save()
+
+            sw = ctk.CTkSwitch(
+                row,
+                text=label,
+                variable=var,
+                command=on_toggle,
+                font=FONTS["body_bold"],
+                text_color=COLORS["text"],
+                progress_color=COLORS["accent"],
+                button_color=COLORS["cream"],
+                fg_color=COLORS["stroke"],
+            )
+            sw.pack(anchor="w", padx=14, pady=(12, 2))
+            ctk.CTkLabel(row, text=tip, font=FONTS["tiny"], text_color=COLORS["muted"], wraplength=380, justify="left").pack(
+                anchor="w", padx=14, pady=(0, 12)
+            )
+            return var
+
+        keep_row = ctk.CTkFrame(scroll, fg_color=COLORS["panel"], corner_radius=12)
+        keep_row.pack(fill="x", pady=5)
+        keep_var = ctk.BooleanVar(value=not bool(self.cfg.close_launcher_on_start))
+
+        def on_keep():
+            self.cfg.close_launcher_on_start = not bool(keep_var.get())
+            self.cfg.save()
+
+        ctk.CTkSwitch(
+            keep_row,
+            text="Manter launcher em segundo plano",
+            variable=keep_var,
+            command=on_keep,
+            font=FONTS["body_bold"],
+            text_color=COLORS["text"],
+            progress_color=COLORS["accent"],
+            button_color=COLORS["cream"],
+            fg_color=COLORS["stroke"],
+        ).pack(anchor="w", padx=14, pady=(12, 2))
+        ctk.CTkLabel(
+            keep_row,
+            text="Não fecha o launcher ao jogar — dá pra mudar skin enquanto o Minecraft tá aberto.",
+            font=FONTS["tiny"],
+            text_color=COLORS["muted"],
+            wraplength=380,
+            justify="left",
+        ).pack(anchor="w", padx=14, pady=(0, 12))
+
+        switch("Usar G1 garbage collector", "use_g1gc", "GC moderno — menos stutter com mods.")
+        switch("Flags JVM modernas", "use_modern_jvm_flags", "AlwaysPreTouch e afins pra alocar RAM mais estável.")
+        switch("Reservar metade da RAM no início", "allocate_min_half_ram", "Xms = metade do Xmx — evita hiccups ao crescer o heap.")
+        switch("Tentar Vulkan (LWJGL)", "use_vulkan", "Pede Vulkan ao LWJGL. Ajuda com Sodium/Iris em PCs com driver bom.")
+        switch("Tela cheia", "fullscreen", "Inicia em fullscreen quando o jogo suportar.")
+        switch("Desativar dica de VSync nativo", "disable_vsync", "Útil se você limita FPS pelo mod/driver.")
+        switch(
+            "Deduplicar strings (JVM)",
+            "use_string_dedup",
+            "Pode reduzir uso de RAM com muitos mods (G1).",
+        )
+
+        ctk.CTkLabel(scroll, text="IP do servidor (opcional)", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(
+            anchor="w", pady=(12, 4)
+        )
+        srv_row = ctk.CTkFrame(scroll, fg_color="transparent")
+        srv_row.pack(fill="x")
+        ip_var = ctk.StringVar(value=self.cfg.server_ip or "")
+        port_var = ctk.StringVar(value=str(self.cfg.server_port or 25565))
+        ctk.CTkEntry(
+            srv_row, textvariable=ip_var, placeholder_text="play.seuservidor.com",
+            fg_color=COLORS["input_bg"], border_color=COLORS["input_border"],
+        ).pack(side="left", fill="x", expand=True)
+        ctk.CTkEntry(
+            srv_row, textvariable=port_var, width=80, placeholder_text="25565",
+            fg_color=COLORS["input_bg"], border_color=COLORS["input_border"],
+        ).pack(side="left", padx=(8, 0))
+
+        ctk.CTkLabel(scroll, text="Resolução da janela", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(
+            anchor="w", pady=(12, 4)
+        )
+        res_row = ctk.CTkFrame(scroll, fg_color="transparent")
+        res_row.pack(fill="x")
+        w_var = ctk.StringVar(value=str(self.cfg.window_width or 854))
+        h_var = ctk.StringVar(value=str(self.cfg.window_height or 480))
+        ctk.CTkEntry(res_row, textvariable=w_var, width=90, fg_color=COLORS["input_bg"], border_color=COLORS["input_border"]).pack(
+            side="left"
+        )
+        ctk.CTkLabel(res_row, text="×", text_color=COLORS["muted"]).pack(side="left", padx=8)
+        ctk.CTkEntry(res_row, textvariable=h_var, width=90, fg_color=COLORS["input_bg"], border_color=COLORS["input_border"]).pack(
+            side="left"
+        )
+
+        ctk.CTkLabel(scroll, text="Argumentos JVM extras", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(
+            anchor="w", pady=(14, 4)
+        )
+        jvm_box = ctk.CTkEntry(
+            scroll,
+            placeholder_text="-XX:…  (opcional)",
+            fg_color=COLORS["input_bg"],
+            border_color=COLORS["input_border"],
+            text_color=COLORS["text"],
+        )
+        jvm_box.pack(fill="x")
+        if self.cfg.extra_jvm_args:
+            jvm_box.insert(0, self.cfg.extra_jvm_args)
+
+        def save_and_close():
+            try:
+                self.cfg.window_width = max(640, int(w_var.get()))
+                self.cfg.window_height = max(480, int(h_var.get()))
+            except Exception:
+                pass
+            self.cfg.server_ip = ip_var.get().strip()
+            try:
+                self.cfg.server_port = int(port_var.get() or 25565)
+            except Exception:
+                self.cfg.server_port = 25565
+            self.cfg.extra_jvm_args = jvm_box.get().strip()
+            if getattr(self, "ram_slider", None) is not None:
+                self.cfg.ram_gb = int(round(self.ram_slider.get()))
+            self.cfg.save()
+            win.destroy()
+            self._options_win = None
+
+        ctk.CTkButton(
+            scroll,
+            text="Salvar",
+            height=44,
+            corner_radius=12,
+            font=FONTS["body_bold"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hot"],
+            text_color=COLORS["accent_text"],
+            command=save_and_close,
+        ).pack(fill="x", pady=(20, 8))
+
+        win.protocol("WM_DELETE_WINDOW", save_and_close)
 
     # ------------------------------------------------------------------ auth
     def _show_device_code(self, user_code: str, verify_uri: str) -> None:
