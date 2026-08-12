@@ -1,0 +1,29 @@
+{
+  "modpacks": [
+    {
+      "id": "puts-smp",
+      "name": "PUTs SMP",
+      "version": "1.0.0",
+      "mc_version": "1.18.2",
+      "loader": "forge",
+      "forge_version": "1.18.2-40.3.11",
+      "description": "Pack oficial do servidor PUTs.",
+      "download_url": "https://pub-XXXX.r2.dev/modpacks/puts-smp-1.0.0.zip",
+      "sha256": "",
+      "server_ip": "play.exemplo.com",
+      "server_port": 25565,
+      "icon_url": "https://pub-XXXX.r2.dev/modpacks/puts-smp.png"
+    },
+    {
+      "id": "puts-lite",
+      "name": "PUTs Lite",
+      "version": "0.2.0",
+      "mc_version": "1.18.2",
+      "loader": "forge",
+      "loader_version": "1.18.2-40.3.11",
+      "description": "Versão leve com menos mods.",
+      "download_url": "https://pub-XXXX.r2.dev/modpacks/puts-lite-0.2.0.zip",
+      "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    }
+  ]
+}

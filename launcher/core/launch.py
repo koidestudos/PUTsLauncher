@@ -82,13 +82,20 @@ def _jvm_arguments(cfg: LauncherConfig) -> list[str]:
 
 def build_launch_command(cfg: LauncherConfig, session: GameSession, java: str) -> list[str]:
     mc_dir = str(minecraft_dir())
+    try:
+        from launcher.core.instances import GameInstance, get_active_id
+
+        inst = GameInstance.load(get_active_id())
+        profile = (inst.forge_profile if inst else None) or FORGE_PROFILE
+    except Exception:
+        profile = FORGE_PROFILE
 
     options: mll.types.MinecraftOptions = {
         "username": session.username,
         "uuid": session.uuid,
         "token": session.access_token,
         "launcherName": "PUTsLauncher",
-        "launcherVersion": "1.3.0",
+        "launcherVersion": "1.4.0",
         "gameDirectory": mc_dir,
         "executablePath": java,
         "jvmArguments": _jvm_arguments(cfg),
@@ -99,11 +106,24 @@ def build_launch_command(cfg: LauncherConfig, session: GameSession, java: str) -
         options["resolutionWidth"] = str(cfg.window_width)
         options["resolutionHeight"] = str(cfg.window_height)
 
-    if cfg.server_ip:
-        options["server"] = cfg.server_ip
-        options["port"] = str(cfg.server_port or 25565)
+    # Prefer instance server, then config
+    server_ip = cfg.server_ip
+    server_port = cfg.server_port or 25565
+    try:
+        from launcher.core.instances import GameInstance, get_active_id
 
-    return mll.command.get_minecraft_command(FORGE_PROFILE, mc_dir, options)
+        inst = GameInstance.load(get_active_id())
+        if inst and inst.server_ip:
+            server_ip = inst.server_ip
+            server_port = int(inst.server_port or 25565)
+    except Exception:
+        pass
+
+    if server_ip:
+        options["server"] = server_ip
+        options["port"] = str(server_port)
+
+    return mll.command.get_minecraft_command(profile, mc_dir, options)
 
 
 def prepare_and_launch(

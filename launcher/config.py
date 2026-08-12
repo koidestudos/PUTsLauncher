@@ -4,7 +4,7 @@ import json
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 MC_VERSION = "1.18.2"
@@ -51,7 +51,7 @@ def puts_home() -> Path:
 
 
 def default_instance_dir() -> Path:
-    return puts_home()
+    return puts_home() / "instances"
 
 
 def config_path() -> Path:
@@ -59,9 +59,10 @@ def config_path() -> Path:
 
 
 def minecraft_dir() -> Path:
-    path = puts_home() / "minecraft"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    """Active instance game directory (multi-instance aware)."""
+    from launcher.core.instances import get_active_minecraft_dir
+
+    return get_active_minecraft_dir()
 
 
 def logs_dir() -> Path:
@@ -74,6 +75,10 @@ def cache_dir() -> Path:
     path = puts_home() / "cache"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+# Default public catalog URL (Cloudflare R2). Override in Opções.
+DEFAULT_MODPACK_INDEX_URL = ""
 
 
 @dataclass
@@ -90,7 +95,7 @@ class LauncherConfig:
     microsoft_uuid: str = ""
     microsoft_name: str = ""
     microsoft_access_token: str = ""
-    saved_accounts: list = field(default_factory=list)  # [{name,uuid,access_token,refresh_token}]
+    saved_accounts: list = field(default_factory=list)
     window_width: int = 854
     window_height: int = 480
     close_launcher_on_start: bool = True
@@ -102,8 +107,12 @@ class LauncherConfig:
     disable_vsync: bool = False
     fullscreen: bool = False
     use_string_dedup: bool = False
-    render_distance: int = 0  # 0 = don't override
+    render_distance: int = 0
     extra_jvm_args: str = ""
+    # Instances + R2 modpacks
+    active_instance_id: str = "puts-smp"
+    instances: list = field(default_factory=list)  # [{id,name,...}] mirror
+    modpack_index_url: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -118,7 +127,6 @@ class LauncherConfig:
             known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
             filtered = {k: v for k, v in data.items() if k in known}
             cfg = cls(**filtered)
-            # Drop broken / revoked public client IDs from older builds
             broken = {
                 "c36a9f36-b8ae-43c3-a484-b3064db1af32",
                 "e19dd415-8236-4e44-b81b-88591a5c88e5",
@@ -134,3 +142,19 @@ class LauncherConfig:
         path = config_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(asdict(self), indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def bootstrap_instances(cfg: Optional["LauncherConfig"] = None) -> "LauncherConfig":
+    """Ensure instance layout exists and activate cfg.active_instance_id."""
+    from launcher.core.instances import activate_instance, apply_instance_to_config, ensure_default_instance, list_instances
+
+    if cfg is None:
+        cfg = LauncherConfig.load()
+    ensure_default_instance()
+    wanted = (cfg.active_instance_id or "puts-smp").strip() or "puts-smp"
+    ids = {i.id for i in list_instances()}
+    if wanted not in ids:
+        wanted = "puts-smp" if "puts-smp" in ids else next(iter(ids))
+    inst = activate_instance(wanted)
+    apply_instance_to_config(cfg, inst)
+    return cfg

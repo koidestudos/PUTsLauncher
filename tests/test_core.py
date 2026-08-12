@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import zipfile
+
 from launcher.auth.session import offline_session
 from launcher.config import FORGE_PROFILE, MC_VERSION, mods_source_dir, puts_home
 from launcher.core.mods import list_bundled_mods, sync_mods
@@ -30,15 +32,24 @@ def test_pack_has_forge_mods():
 
 def test_sync_mods_roundtrip(tmp_path, monkeypatch):
     import launcher.config as config
+    import launcher.core.instances as instances
     import launcher.core.mods as mods_mod
 
-    monkeypatch.setattr(config, "puts_home", lambda: tmp_path / "MinecraftPUTS")
-    monkeypatch.setattr(config, "minecraft_dir", lambda: tmp_path / "MinecraftPUTS" / "minecraft")
-    monkeypatch.setattr(mods_mod, "minecraft_dir", lambda: tmp_path / "MinecraftPUTS" / "minecraft")
+    home = tmp_path / "MinecraftPUTS"
+    monkeypatch.setattr(config, "puts_home", lambda: home)
+    monkeypatch.setattr(instances, "puts_home", lambda: home)
+    # Reset process-wide active dir so instance helpers use the patched home
+    instances._active_mc = None
+    instances._active_id = ""
+    instances.ensure_default_instance()
+    instances.activate_instance("puts-smp")
+
+    monkeypatch.setattr(mods_mod, "minecraft_dir", instances.get_active_minecraft_dir)
 
     n = sync_mods()
     assert n == len(list_bundled_mods())
-    assert len(list((tmp_path / "MinecraftPUTS" / "minecraft" / "mods").glob("*.jar"))) == n
+    mc = instances.get_active_minecraft_dir()
+    assert len(list((mc / "mods").glob("*.jar"))) == n
 
 
 def test_is_game_ready_false_on_empty(tmp_path, monkeypatch):
@@ -60,3 +71,80 @@ def test_progress_tracker_reaches_100():
     t.set_phase_fraction(1.0)
     t.complete_phase()
     assert seen[-1] >= 99.0
+
+
+def test_instances_create_and_activate(tmp_path, monkeypatch):
+    import launcher.config as config
+    import launcher.core.instances as instances
+
+    home = tmp_path / "MinecraftPUTS"
+    monkeypatch.setattr(config, "puts_home", lambda: home)
+    monkeypatch.setattr(instances, "puts_home", lambda: home)
+    instances._active_mc = None
+    instances._active_id = ""
+
+    default = instances.ensure_default_instance()
+    assert default.id == "puts-smp"
+    assert (home / "instances" / "puts-smp" / "minecraft").is_dir()
+
+    other = instances.create_instance("Meu Pack", source="local")
+    assert other.id == "meu-pack"
+    assert other.forge_profile == FORGE_PROFILE
+
+    instances.activate_instance(other.id)
+    assert instances.get_active_id() == "meu-pack"
+    assert instances.get_active_minecraft_dir() == other.minecraft_path
+
+
+def test_modpack_index_parse():
+    from launcher.core.modpacks import ModpackInfo
+
+    raw = {
+        "modpacks": [
+            {
+                "id": "demo",
+                "name": "Demo",
+                "version": "1.0",
+                "download_url": "https://example.com/demo.zip",
+                "forge_version": "1.18.2-40.3.11",
+            },
+            {"name": "broken"},  # missing id/url → skipped
+        ]
+    }
+    packs = [ModpackInfo.from_dict(x) for x in raw["modpacks"]]
+    packs = [p for p in packs if p.id and p.download_url]
+    assert len(packs) == 1
+    assert packs[0].id == "demo"
+    assert packs[0].loader_version == "1.18.2-40.3.11"
+
+
+def test_install_modpack_zip(tmp_path, monkeypatch):
+    import launcher.config as config
+    import launcher.core.instances as instances
+    from launcher.core.modpacks import install_modpack_zip
+
+    home = tmp_path / "MinecraftPUTS"
+    monkeypatch.setattr(config, "puts_home", lambda: home)
+    monkeypatch.setattr(instances, "puts_home", lambda: home)
+    instances._active_mc = None
+    instances._active_id = ""
+
+    inst = instances.create_instance("Zip Pack", source="r2", instance_id="zip-pack")
+    zpath = tmp_path / "pack.zip"
+    with zipfile.ZipFile(zpath, "w") as zf:
+        zf.writestr("mods/example-mod.jar", b"fake-jar")
+        zf.writestr("config/foo.toml", b"bar=1\n")
+        zf.writestr("readme.txt", b"ignore me")
+
+    install_modpack_zip(zpath, inst)
+    assert (inst.minecraft_path / "mods" / "example-mod.jar").exists()
+    assert (inst.minecraft_path / "config" / "foo.toml").exists()
+    assert not (inst.minecraft_path / "readme.txt").exists()
+
+
+def test_forge_profile_helper():
+    from launcher.core.instances import _forge_profile
+
+    assert _forge_profile("1.18.2", "1.18.2-40.3.11") == "1.18.2-forge-40.3.11"
+    assert _forge_profile("1.18.2", "1.18.2-forge-40.3.11") == "1.18.2-forge-40.3.11"
+    assert _forge_profile("1.18.2", "40.3.11") == "1.18.2-forge-40.3.11"

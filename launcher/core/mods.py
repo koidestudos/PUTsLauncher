@@ -22,12 +22,39 @@ def list_bundled_mods() -> list[Path]:
 
 
 def sync_mods(tracker: Optional[ProgressTracker] = None) -> int:
-    """Mirror bundled mods/ into MinecraftPUTS/minecraft/mods."""
-    src = mods_source_dir()
+    """
+    Sync mods into the active instance.
+    - R2 modpack instances: leave pack mods as-is (already extracted).
+    - Bundled/local: mirror launcher/mods → instance/minecraft/mods.
+    """
+    try:
+        from launcher.core.instances import GameInstance, get_active_id
+
+        inst = GameInstance.load(get_active_id())
+    except Exception:
+        inst = None
+
     dst = instance_mods_dir()
+
+    if inst and inst.source == "r2" and (inst.modpack_id or list(dst.glob("*.jar"))):
+        n = len(list(dst.glob("*.jar")))
+        if tracker:
+            tracker.set_phase("mods", f"Modpack R2 — {n} mods")
+            tracker.complete_phase(f"Mods do pack ({n})")
+        return n
+
+    src = mods_source_dir()
     if not src.exists():
+        # No bundled folder — OK if instance already has jars
+        n = len(list(dst.glob("*.jar")))
+        if n:
+            if tracker:
+                tracker.set_phase("mods", f"Usando {n} mods da instância")
+                tracker.complete_phase("Mods OK")
+            return n
         raise FileNotFoundError(
-            f"Pasta de mods não encontrada ao lado do launcher:\n{src}"
+            f"Pasta de mods não encontrada ao lado do launcher:\n{src}\n"
+            "Instale um modpack pelo catálogo R2 ou coloque jars em /mods."
         )
 
     bundled = {p.name: p for p in list_bundled_mods()}

@@ -15,6 +15,7 @@ from launcher.config import (
     LauncherConfig,
     logs_dir,
     minecraft_dir,
+    puts_home,
 )
 from launcher.core.progress import ProgressTracker
 
@@ -25,10 +26,11 @@ def forge_installed(mc_dir: Optional[Path] = None) -> bool:
 
 
 def java_runtime_path(mc_dir: Optional[Path] = None) -> Optional[str]:
-    root = str(mc_dir or minecraft_dir())
-    path = mll.runtime.get_executable_path(JVM_RUNTIME, root)
-    if path and Path(path).exists():
-        return path
+    # Prefer shared runtime, then instance dir
+    for root in (puts_home() / "shared", Path(mc_dir or minecraft_dir())):
+        path = mll.runtime.get_executable_path(JVM_RUNTIME, str(root))
+        if path and Path(path).exists():
+            return path
     return None
 
 
@@ -46,11 +48,11 @@ def resolve_java(cfg: LauncherConfig, mc_dir: Optional[Path] = None) -> Optional
 
 
 def ensure_java(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None) -> str:
-    """Download Mojang Java 17 into MinecraftPUTS/minecraft/runtime if needed."""
-    mc = minecraft_dir()
-    existing = resolve_java(cfg, mc)
-    # Prefer the bundled Mojang runtime when present; otherwise install it.
-    bundled = java_runtime_path(mc)
+    """Download Mojang Java 17 into MinecraftPUTS/shared (shared across instances)."""
+    shared = puts_home() / "shared"
+    shared.mkdir(parents=True, exist_ok=True)
+    existing = resolve_java(cfg, shared)
+    bundled = java_runtime_path(shared)
     if bundled:
         if tracker:
             tracker.set_phase("java", "Java 17 já instalado")
@@ -60,11 +62,10 @@ def ensure_java(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None) 
     if tracker:
         tracker.set_phase("java", "Baixando Java 17 (Mojang)…")
     callback = tracker.as_mll_callback("java") if tracker else None
-    mll.runtime.install_jvm_runtime(JVM_RUNTIME, str(mc), callback=callback)
-    path = java_runtime_path(mc)
+    mll.runtime.install_jvm_runtime(JVM_RUNTIME, str(shared), callback=callback)
+    path = java_runtime_path(shared)
     if not path:
-        # Fall back to system java if Mojang runtime failed to resolve
-        fallback = resolve_java(cfg, mc)
+        fallback = resolve_java(cfg, shared)
         if fallback:
             if tracker:
                 tracker.complete_phase(f"Usando Java do sistema: {fallback}")
@@ -75,7 +76,6 @@ def ensure_java(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None) 
     cfg.java_path = path
     cfg.save()
     return path
-
 
 def ensure_forge(tracker: Optional[ProgressTracker] = None) -> str:
     mc = str(minecraft_dir())

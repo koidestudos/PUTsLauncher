@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from launcher.config import LauncherConfig, minecraft_dir
+from launcher.config import LauncherConfig, puts_home
 
 
 @dataclass
@@ -38,7 +38,7 @@ def _candidate_account_files() -> list[Path]:
             appdata / ".minecraft" / "launcher_accounts.json",
             appdata / ".minecraft" / "launcher_accounts_microsoft_store.json",
             home / ".minecraft" / "launcher_accounts.json",
-            minecraft_dir().parent / "imported_accounts.json",
+            puts_home() / "imported_accounts.json",
         ]
     )
     return candidates

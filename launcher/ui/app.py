@@ -32,6 +32,7 @@ from launcher.config import (
     MC_VERSION,
     LauncherConfig,
     asset_path,
+    bootstrap_instances,
     mods_source_dir,
     puts_home,
 )
@@ -40,14 +41,19 @@ from launcher.core import (
     CancelledError,
     ProgressState,
     ProgressTracker,
+    activate_instance,
+    fetch_modpack_index,
+    install_modpack_from_r2,
     is_game_ready,
     list_bundled_mods,
+    list_instances,
     prepare_and_launch,
     prepare_game,
     reinstall_game,
     sync_mods,
     uninstall_game,
 )
+from launcher.core.instances import apply_instance_to_config, delete_instance
 from launcher.ui.skin3d import Skin3DViewer
 from launcher.ui.theme import COLORS, FONTS, register_fonts
 
@@ -106,7 +112,7 @@ def sys_platform() -> str:
 class PUTsLauncherApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
-        self.cfg = LauncherConfig.load()
+        self.cfg = bootstrap_instances(LauncherConfig.load())
         self.title(f"{__app_name__}")
         self.geometry("1020x680")
         self.minsize(940, 620)
@@ -151,7 +157,7 @@ class PUTsLauncherApp(ctk.CTk):
         left = ctk.CTkFrame(self.shell, fg_color="transparent", corner_radius=0)
         left.grid(row=0, column=0, sticky="nsew")
         left.grid_columnconfigure(0, weight=1)
-        left.grid_rowconfigure(6, weight=1)
+        left.grid_rowconfigure(7, weight=1)
 
         brand = ctk.CTkFrame(left, fg_color="transparent")
         brand.grid(row=0, column=0, sticky="ew", padx=42, pady=(32, 6))
@@ -189,11 +195,62 @@ class PUTsLauncherApp(ctk.CTk):
             text_color=COLORS["stroke"],
             anchor="w",
         )
-        self.meta_label.grid(row=1, column=0, sticky="ew", padx=42, pady=(2, 14))
+        self.meta_label.grid(row=1, column=0, sticky="ew", padx=42, pady=(2, 6))
+
+        # Instance switcher (CurseForge-style)
+        inst_row = ctk.CTkFrame(left, fg_color="transparent")
+        inst_row.grid(row=2, column=0, sticky="ew", padx=42, pady=(0, 10))
+        inst_row.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(inst_row, text="Instância", font=FONTS["tiny"], text_color=COLORS["muted"], anchor="w").grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+        self.instance_var = ctk.StringVar(value="")
+        self.instance_menu = ctk.CTkOptionMenu(
+            inst_row,
+            variable=self.instance_var,
+            values=["PUTs SMP"],
+            command=self._on_instance_chosen,
+            height=36,
+            font=FONTS["body_bold"],
+            fg_color=COLORS["panel"],
+            button_color=COLORS["accent_dim"],
+            button_hover_color=COLORS["accent"],
+            dropdown_fg_color=COLORS["panel"],
+            dropdown_hover_color=COLORS["panel_soft"],
+            text_color=COLORS["text"],
+            dropdown_text_color=COLORS["text"],
+        )
+        self.instance_menu.grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        self.btn_add_pack = ctk.CTkButton(
+            inst_row,
+            text="+ Modpack",
+            width=110,
+            height=36,
+            corner_radius=10,
+            font=FONTS["small"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hot"],
+            text_color=COLORS["accent_text"],
+            command=self._open_modpack_catalog,
+        )
+        self.btn_add_pack.grid(row=1, column=1, padx=(0, 6))
+        self.btn_del_inst = ctk.CTkButton(
+            inst_row,
+            text="✕",
+            width=36,
+            height=36,
+            corner_radius=10,
+            font=FONTS["small"],
+            fg_color=COLORS["panel"],
+            hover_color=COLORS["danger"],
+            text_color=COLORS["muted"],
+            command=self._delete_active_instance,
+        )
+        self.btn_del_inst.grid(row=1, column=2)
 
         # Mode pills
         modes = ctk.CTkFrame(left, fg_color="transparent")
-        modes.grid(row=2, column=0, sticky="ew", padx=42)
+        modes.grid(row=3, column=0, sticky="ew", padx=42)
         modes.grid_columnconfigure((0, 1), weight=1)
         self.auth_mode = ctk.StringVar(
             value=self.cfg.auth_mode if self.cfg.auth_mode in ("offline", "microsoft") else "offline"
@@ -227,7 +284,7 @@ class PUTsLauncherApp(ctk.CTk):
 
         # Offline nick
         self.nick_wrap = ctk.CTkFrame(left, fg_color="transparent")
-        self.nick_wrap.grid(row=3, column=0, sticky="ew", padx=42, pady=(14, 0))
+        self.nick_wrap.grid(row=4, column=0, sticky="ew", padx=42, pady=(14, 0))
         self.nick_wrap.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(self.nick_wrap, text="Nickname", font=FONTS["small"], text_color=COLORS["muted"], anchor="w").grid(
             row=0, column=0, sticky="w"
@@ -248,7 +305,7 @@ class PUTsLauncherApp(ctk.CTk):
 
         # Microsoft area: login OR profile chip
         self.ms_wrap = ctk.CTkFrame(left, fg_color="transparent")
-        self.ms_wrap.grid(row=4, column=0, sticky="ew", padx=42, pady=(14, 0))
+        self.ms_wrap.grid(row=5, column=0, sticky="ew", padx=42, pady=(14, 0))
         self.ms_wrap.grid_columnconfigure(0, weight=1)
 
         self.btn_ms_login = ctk.CTkButton(
@@ -311,7 +368,7 @@ class PUTsLauncherApp(ctk.CTk):
 
         # Options (RAM + performance) replaces inline RAM slider
         opts = ctk.CTkFrame(left, fg_color="transparent")
-        opts.grid(row=5, column=0, sticky="ew", padx=42, pady=(16, 0))
+        opts.grid(row=6, column=0, sticky="ew", padx=42, pady=(16, 0))
         opts.grid_columnconfigure(0, weight=1)
         self.btn_options = ctk.CTkButton(
             opts,
@@ -331,7 +388,7 @@ class PUTsLauncherApp(ctk.CTk):
 
         # Actions
         actions = ctk.CTkFrame(left, fg_color="transparent")
-        actions.grid(row=7, column=0, sticky="ew", padx=42, pady=(10, 24))
+        actions.grid(row=8, column=0, sticky="ew", padx=42, pady=(10, 24))
         actions.grid_columnconfigure(0, weight=1)
 
         self.progress_box = ctk.CTkFrame(actions, fg_color=COLORS["panel"], corner_radius=14)
@@ -461,6 +518,7 @@ class PUTsLauncherApp(ctk.CTk):
         self.btn_change_skin.grid(row=2, column=0, sticky="ew", padx=48, pady=(0, 36))
 
         self._set_mode(self.auth_mode.get())
+        self._refresh_instance_menu()
         self._refresh_ready_state()
 
     def _paint_backdrop(self) -> None:
@@ -588,6 +646,190 @@ class PUTsLauncherApp(ctk.CTk):
                 self.after(0, finish)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ------------------------------------------------------------------ instances / modpacks
+    def _refresh_instance_menu(self) -> None:
+        insts = list_instances()
+        if not insts:
+            return
+        labels = []
+        self._instance_by_label = {}
+        active = None
+        for i in insts:
+            label = i.name
+            # Disambiguate duplicate names
+            if label in self._instance_by_label:
+                label = f"{i.name} ({i.id})"
+            self._instance_by_label[label] = i.id
+            labels.append(label)
+            if i.id == (self.cfg.active_instance_id or ""):
+                active = label
+        self.instance_menu.configure(values=labels)
+        chosen = active or labels[0]
+        self.instance_var.set(chosen)
+        self._update_instance_meta()
+
+    def _update_instance_meta(self) -> None:
+        try:
+            from launcher.core.instances import GameInstance, get_active_id
+
+            inst = GameInstance.load(get_active_id())
+        except Exception:
+            inst = None
+        if inst:
+            pack = f"  ·  {inst.modpack_id}@{inst.modpack_version}" if inst.modpack_id else ""
+            self.meta_label.configure(
+                text=f"{inst.name}  ·  MC {inst.mc_version}  ·  Forge {inst.forge_version}{pack}"
+            )
+        else:
+            self.meta_label.configure(text=f"Minecraft {MC_VERSION}  ·  Forge {FORGE_VERSION}")
+
+    def _on_instance_chosen(self, label: str) -> None:
+        iid = getattr(self, "_instance_by_label", {}).get(label)
+        if not iid:
+            return
+        inst = activate_instance(iid)
+        apply_instance_to_config(self.cfg, inst)
+        self.cfg = LauncherConfig.load()
+        self._update_instance_meta()
+        self._refresh_ready_state()
+        self._refresh_skin()
+
+    def _delete_active_instance(self) -> None:
+        from launcher.core.instances import get_active_id
+
+        iid = get_active_id()
+        if iid == "puts-smp":
+            messagebox.showinfo(
+                "Instância",
+                "A instância padrão PUTs SMP não pode ser removida.\n"
+                "Use Desinstalar no menu para limpar os arquivos dela.",
+            )
+            return
+        if not messagebox.askyesno("Remover instância", f"Apagar a instância “{iid}” do disco?"):
+            return
+        delete_instance(iid)
+        self.cfg = bootstrap_instances(LauncherConfig.load())
+        self._refresh_instance_menu()
+        self._refresh_ready_state()
+
+    def _open_modpack_catalog(self) -> None:
+        url = (self.cfg.modpack_index_url or "").strip()
+        if not url:
+            messagebox.showinfo(
+                "Catálogo R2",
+                "Configure a URL do índice de modpacks em Opções.\n\n"
+                "Ex.: https://pub-XXXX.r2.dev/modpacks/index.json",
+            )
+            self._open_options()
+            return
+
+        win = ctk.CTkToplevel(self)
+        win.title("Modpacks (Cloudflare R2)")
+        win.geometry("520x560")
+        win.configure(fg_color=COLORS["bg1"])
+        win.transient(self)
+
+        head = ctk.CTkFrame(win, fg_color="transparent")
+        head.pack(fill="x", padx=20, pady=(18, 8))
+        ctk.CTkLabel(head, text="Modpacks", font=FONTS["title"], text_color=COLORS["accent"]).pack(anchor="w")
+        status = ctk.CTkLabel(head, text="Carregando catálogo…", font=FONTS["small"], text_color=COLORS["muted"])
+        status.pack(anchor="w", pady=(4, 0))
+
+        scroll = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=16, pady=8)
+
+        def render(packs, err=None):
+            for child in scroll.winfo_children():
+                child.destroy()
+            if err:
+                status.configure(text=str(err), text_color=COLORS["danger"])
+                return
+            status.configure(text=f"{len(packs)} modpack(s) no R2", text_color=COLORS["muted"])
+            if not packs:
+                ctk.CTkLabel(scroll, text="Nenhum modpack no índice.", text_color=COLORS["muted"]).pack()
+                return
+            for pack in packs:
+                card = ctk.CTkFrame(scroll, fg_color=COLORS["panel"], corner_radius=14)
+                card.pack(fill="x", pady=6)
+                ctk.CTkLabel(
+                    card, text=pack.name, font=FONTS["body_bold"], text_color=COLORS["text"], anchor="w"
+                ).pack(fill="x", padx=14, pady=(12, 0))
+                ctk.CTkLabel(
+                    card,
+                    text=f"v{pack.version}  ·  MC {pack.mc_version}  ·  {pack.loader} {pack.loader_version}",
+                    font=FONTS["tiny"],
+                    text_color=COLORS["muted"],
+                    anchor="w",
+                ).pack(fill="x", padx=14)
+                if pack.description:
+                    ctk.CTkLabel(
+                        card,
+                        text=pack.description,
+                        font=FONTS["small"],
+                        text_color=COLORS["stroke"],
+                        anchor="w",
+                        wraplength=440,
+                        justify="left",
+                    ).pack(fill="x", padx=14, pady=(4, 0))
+
+                def make_install(p=pack):
+                    return lambda: self._install_catalog_pack(p, win)
+
+                ctk.CTkButton(
+                    card,
+                    text="Instalar instância",
+                    height=36,
+                    corner_radius=10,
+                    font=FONTS["body_bold"],
+                    fg_color=COLORS["accent"],
+                    hover_color=COLORS["accent_hot"],
+                    text_color=COLORS["accent_text"],
+                    command=make_install(),
+                ).pack(fill="x", padx=14, pady=(10, 12))
+
+        def job():
+            return fetch_modpack_index(url)
+
+        def done(packs, err):
+            render(packs or [], err)
+
+        self._run_bg(job, done, busy_text=None)
+
+    def _install_catalog_pack(self, pack, catalog_win=None) -> None:
+        if catalog_win is not None:
+            try:
+                catalog_win.destroy()
+            except Exception:
+                pass
+
+        self._show_progress(True)
+        self.progress_title.configure(text="Modpack")
+        self.detail_label.configure(text=f"Instalando {pack.name}…")
+
+        def job():
+            tracker = ProgressTracker({"mods": 0.55, "java": 0.2, "forge": 0.25})
+            tracker.on_update = lambda s: self.after(0, lambda: self._set_progress_ui(s))
+            inst = install_modpack_from_r2(pack, tracker=tracker)
+            activate_instance(inst.id)
+            apply_instance_to_config(self.cfg, inst)
+            # Install Java/Forge into the new instance game dir
+            self.cfg = LauncherConfig.load()
+            prepare_game(self.cfg, tracker=tracker)
+            sync_mods(tracker=tracker)
+            return inst
+
+        def done(inst, err):
+            self._show_progress(False)
+            if err:
+                messagebox.showerror("Modpack", str(err))
+                return
+            self.cfg = LauncherConfig.load()
+            self._refresh_instance_menu()
+            self._refresh_ready_state()
+            messagebox.showinfo("Modpack", f"Instância pronta: {inst.name}")
+
+        self._run_bg(job, done, busy_text="PACK…")
 
     # ------------------------------------------------------------------ profile / accounts
     def _refresh_ms_profile(self) -> None:
@@ -1091,6 +1333,27 @@ class PUTsLauncherApp(ctk.CTk):
             side="left"
         )
 
+        ctk.CTkLabel(scroll, text="Catálogo de modpacks (Cloudflare R2)", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(
+            anchor="w", pady=(14, 4)
+        )
+        idx_var = ctk.StringVar(value=self.cfg.modpack_index_url or "")
+        ctk.CTkEntry(
+            scroll,
+            textvariable=idx_var,
+            placeholder_text="https://pub-XXXX.r2.dev/modpacks/index.json",
+            fg_color=COLORS["input_bg"],
+            border_color=COLORS["input_border"],
+            text_color=COLORS["text"],
+        ).pack(fill="x")
+        ctk.CTkLabel(
+            scroll,
+            text="JSON público no R2 listando os packs (id, name, version, download_url…).",
+            font=FONTS["tiny"],
+            text_color=COLORS["muted"],
+            wraplength=380,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
         ctk.CTkLabel(scroll, text="Argumentos JVM extras", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(
             anchor="w", pady=(14, 4)
         )
@@ -1117,6 +1380,7 @@ class PUTsLauncherApp(ctk.CTk):
             except Exception:
                 self.cfg.server_port = 25565
             self.cfg.extra_jvm_args = jvm_box.get().strip()
+            self.cfg.modpack_index_url = idx_var.get().strip()
             if getattr(self, "ram_slider", None) is not None:
                 self.cfg.ram_gb = int(round(self.ram_slider.get()))
             self.cfg.save()
@@ -1367,7 +1631,13 @@ class PUTsLauncherApp(ctk.CTk):
         if self._menu_popup:
             self._menu_popup.destroy()
             self._menu_popup = None
-        if not messagebox.askyesno("Desinstalar", f"Apagar os arquivos em\n{puts_home() / 'minecraft'}?"):
+        from launcher.config import minecraft_dir
+
+        mc = minecraft_dir()
+        if not messagebox.askyesno(
+            "Desinstalar",
+            f"Apagar os arquivos da instância ativa?\n{mc}",
+        ):
             return
 
         def job():
