@@ -80,7 +80,7 @@ _active_id: str = ""
 
 
 def get_active_id() -> str:
-    return _active_id or "puts-smp"
+    return _active_id or "default"
 
 
 def get_active_minecraft_dir() -> Path:
@@ -108,40 +108,42 @@ def list_instances() -> list[GameInstance]:
 
 
 def ensure_default_instance() -> GameInstance:
-    """Migrate legacy ~/MinecraftPUTS/minecraft into instances/puts-smp if needed."""
+    """Ensure at least one instance exists. Migrate legacy ~/MinecraftPUTS/minecraft if needed."""
     from datetime import datetime, timezone
 
     root = instances_root()
-    default_id = "puts-smp"
-    default_root = root / default_id
+    default_id = "default"
     legacy_mc = puts_home() / "minecraft"
 
-    if not default_root.exists():
-        default_root.mkdir(parents=True, exist_ok=True)
-        # Move legacy install if present and instances empty of this id
-        if legacy_mc.exists() and not (default_root / "minecraft").exists():
-            try:
-                shutil.move(str(legacy_mc), str(default_root / "minecraft"))
-            except Exception:
-                # Fallback: copy tree reference by renaming attempt failed — leave legacy
-                (default_root / "minecraft").mkdir(parents=True, exist_ok=True)
-        inst = GameInstance(
-            id=default_id,
-            name="PUTs SMP",
-            source="bundled",
-            created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        )
-        inst.ensure_dirs()
-        inst.save_meta()
-        return inst
+    # Prefer any existing instance (e.g. puts-smp from an older install or GitHub pack)
+    existing_dirs = sorted(p for p in root.iterdir() if p.is_dir())
+    if existing_dirs:
+        for child in existing_dirs:
+            inst = GameInstance.load(child.name)
+            if inst is not None:
+                inst.ensure_dirs()
+                return inst
+            # Folder without meta — synthesize
+            inst = GameInstance(id=child.name, name=child.name.replace("-", " ").title(), source="local")
+            inst.ensure_dirs()
+            inst.save_meta()
+            return inst
 
-    inst = GameInstance.load(default_id)
-    if inst is None:
-        inst = GameInstance(id=default_id, name="PUTs SMP", source="bundled")
-        inst.ensure_dirs()
-        inst.save_meta()
-    else:
-        inst.ensure_dirs()
+    default_root = root / default_id
+    default_root.mkdir(parents=True, exist_ok=True)
+    if legacy_mc.exists() and not (default_root / "minecraft").exists():
+        try:
+            shutil.move(str(legacy_mc), str(default_root / "minecraft"))
+        except Exception:
+            (default_root / "minecraft").mkdir(parents=True, exist_ok=True)
+    inst = GameInstance(
+        id=default_id,
+        name="Início",
+        source="local",
+        created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    )
+    inst.ensure_dirs()
+    inst.save_meta()
     return inst
 
 
@@ -212,11 +214,15 @@ def _forge_profile(mc_version: str, forge_version: str) -> str:
 
 def delete_instance(instance_id: str) -> None:
     path = instances_root() / instance_id
+    others = [p.name for p in instances_root().iterdir() if p.is_dir() and p.name != instance_id]
     if path.exists():
         shutil.rmtree(path, ignore_errors=True)
     if get_active_id() == instance_id:
-        ensure_default_instance()
-        activate_instance("puts-smp")
+        if others:
+            activate_instance(others[0])
+        else:
+            ensure_default_instance()
+            activate_instance("default")
 
 
 def apply_instance_to_config(cfg: LauncherConfig, inst: GameInstance) -> None:

@@ -97,7 +97,10 @@ options.txt      (opcional)
 ## No launcher
 
 1. **Opções** → `dono/repo`
-2. **+ Modpack** → instalar
+2. **+ Modpack** → instalar (incluindo o PUTs SMP — não vem mais na pasta do EXE)
 3. Trocar instância no menu **Instância**
+4. **BAIXAR** / **JOGAR**
 
 Java fica em `~/MinecraftPUTS/shared/`. Cada pack em `~/MinecraftPUTS/instances/<id>/minecraft/`.
+
+O download do launcher **não** inclui pasta `mods`. Tudo sobe pelo Release.

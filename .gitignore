@@ -11,3 +11,4 @@ release/
 .mypy_cache/
 launcher_config.json
 *.log
+mods/

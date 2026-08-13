@@ -46,6 +46,7 @@ from launcher.core import (
     install_modpack,
     is_game_ready,
     list_bundled_mods,
+    list_instance_mods,
     list_instances,
     prepare_and_launch,
     prepare_game,
@@ -572,11 +573,25 @@ class PUTsLauncherApp(ctk.CTk):
 
     def _refresh_ready_state(self) -> None:
         ready = is_game_ready()
-        mods = list_bundled_mods()
-        self.meta_label.configure(
-            text=f"Minecraft {MC_VERSION}  ·  Forge {FORGE_VERSION}  ·  {len(mods)} mods"
-            + ("  ·  pronto" if ready else "  ·  precisa baixar")
-        )
+        try:
+            from launcher.core.instances import GameInstance, get_active_id
+
+            inst = GameInstance.load(get_active_id())
+        except Exception:
+            inst = None
+        try:
+            n_mods = len(list_instance_mods())
+        except Exception:
+            n_mods = 0
+        if inst:
+            pack = f"  ·  {inst.modpack_id}@{inst.modpack_version}" if inst.modpack_id else ""
+            mods = f"  ·  {n_mods} mods" if n_mods else "  ·  sem mods"
+            hint = "pronto" if ready else "baixar Java/Forge"
+            self.meta_label.configure(
+                text=f"{inst.name}  ·  MC {inst.mc_version}  ·  Forge {inst.forge_version}{pack}{mods}  ·  {hint}"
+            )
+        else:
+            self.meta_label.configure(text="Instale um modpack em + Modpack")
         if self._downloading or self._busy:
             return
         if ready:
@@ -601,7 +616,7 @@ class PUTsLauncherApp(ctk.CTk):
         titles = {
             "java": "Baixando Java",
             "forge": "Baixando Minecraft + Forge",
-            "mods": "Copiando mods",
+            "mods": "Mods do pack",
             "launch": "Abrindo o jogo",
         }
         self.progress_title.configure(text=titles.get(state.phase, state.phase.capitalize() or "Baixando"))
@@ -696,14 +711,14 @@ class PUTsLauncherApp(ctk.CTk):
         self._refresh_skin()
 
     def _delete_active_instance(self) -> None:
-        from launcher.core.instances import get_active_id
+        from launcher.core.instances import get_active_id, list_instances
 
         iid = get_active_id()
-        if iid == "puts-smp":
+        if len(list_instances()) <= 1:
             messagebox.showinfo(
                 "Instância",
-                "A instância padrão PUTs SMP não pode ser removida.\n"
-                "Use Desinstalar no menu para limpar os arquivos dela.",
+                "Não dá para remover a única instância.\n"
+                "Instale outro modpack antes, ou use Desinstalar para limpar os arquivos.",
             )
             return
         if not messagebox.askyesno("Remover instância", f"Apagar a instância “{iid}” do disco?"):
@@ -1556,14 +1571,14 @@ class PUTsLauncherApp(ctk.CTk):
             self.after(0, lambda s=state: self._set_progress_ui(s))
 
         def job():
-            tracker = ProgressTracker({"java": 0.20, "forge": 0.65, "mods": 0.15}, on_update=on_progress)
+            tracker = ProgressTracker({"java": 0.25, "forge": 0.75}, on_update=on_progress)
             if force_reinstall:
                 reinstall_game(self.cfg, tracker=tracker, cancel_event=self._cancel)
             else:
                 prepare_game(self.cfg, tracker=tracker, cancel_event=self._cancel)
             if self._cancel.is_set():
                 raise CancelledError("Download cancelado.")
-            sync_mods(tracker=tracker)
+            # Mods vêm do + Modpack (GitHub), não da pasta do EXE
             return True
 
         def done(_ok, err):

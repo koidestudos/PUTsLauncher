@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -14,7 +13,12 @@ def instance_mods_dir() -> Path:
     return path
 
 
+def list_instance_mods() -> list[Path]:
+    return sorted(p for p in instance_mods_dir().glob("*.jar") if p.is_file())
+
+
 def list_bundled_mods() -> list[Path]:
+    """Optional local /mods next to the EXE (dev only). Not shipped anymore."""
     src = mods_source_dir()
     if not src.exists():
         return []
@@ -23,9 +27,10 @@ def list_bundled_mods() -> list[Path]:
 
 def sync_mods(tracker: Optional[ProgressTracker] = None) -> int:
     """
-    Sync mods into the active instance.
-    - GitHub Release / remote packs: leave pack mods as-is (already extracted).
-    - Bundled/local: mirror launcher/mods → instance/minecraft/mods.
+    Ensure the active instance has mods.
+
+    Packs come from GitHub Releases (+ Modpack). The launcher no longer ships
+    a puts-smp /mods folder in the download.
     """
     try:
         from launcher.core.instances import GameInstance, get_active_id
@@ -35,54 +40,43 @@ def sync_mods(tracker: Optional[ProgressTracker] = None) -> int:
         inst = None
 
     dst = instance_mods_dir()
+    jars = list(dst.glob("*.jar"))
+    n = len(jars)
 
-    remote = inst and inst.source in {"github", "r2"} and (inst.modpack_id or list(dst.glob("*.jar")))
-    if remote:
-        n = len(list(dst.glob("*.jar")))
+    # GitHub / remote pack already extracted into the instance
+    if inst and inst.source in {"github", "r2"}:
         if tracker:
             tracker.set_phase("mods", f"Modpack — {n} mods")
-            tracker.complete_phase(f"Mods do pack ({n})")
+            tracker.complete_phase(f"Mods do pack ({n})" if n else "Modpack sem jars?")
+        if n == 0:
+            raise FileNotFoundError(
+                "Esta instância não tem mods.\n"
+                "Instale de novo pelo + Modpack (catálogo GitHub)."
+            )
         return n
 
-    src = mods_source_dir()
-    if not src.exists():
-        # No bundled folder — OK if instance already has jars
-        n = len(list(dst.glob("*.jar")))
-        if n:
-            if tracker:
-                tracker.set_phase("mods", f"Usando {n} mods da instância")
-                tracker.complete_phase("Mods OK")
-            return n
-        raise FileNotFoundError(
-            f"Pasta de mods não encontrada ao lado do launcher:\n{src}\n"
-            "Instale um modpack pelo catálogo GitHub ou coloque jars em /mods."
-        )
-
-    bundled = {p.name: p for p in list_bundled_mods()}
-    total = max(len(bundled), 1)
-    if tracker:
-        tracker.set_phase("mods", f"Sincronizando {len(bundled)} mods…")
-
-    for existing in list(dst.glob("*.jar")):
-        if existing.name not in bundled:
-            existing.unlink(missing_ok=True)
-
-    copied = 0
-    for i, (name, src_path) in enumerate(bundled.items(), start=1):
-        target = dst / name
-        need_copy = True
-        if target.exists():
-            try:
-                if target.stat().st_size == src_path.stat().st_size:
-                    need_copy = False
-            except OSError:
-                need_copy = True
-        if need_copy:
-            shutil.copy2(src_path, target)
-            copied += 1
+    if n:
         if tracker:
-            tracker.set_counts(i, total, f"Mods: {name}")
+            tracker.set_phase("mods", f"Usando {n} mods da instância")
+            tracker.complete_phase("Mods OK")
+        return n
 
-    if tracker:
-        tracker.complete_phase(f"Mods prontos ({len(bundled)}, {copied} novos/atualizados)")
-    return len(bundled)
+    # Optional leftover: local /mods beside EXE for manual testing only
+    bundled = list_bundled_mods()
+    if bundled:
+        import shutil
+
+        if tracker:
+            tracker.set_phase("mods", f"Copiando {len(bundled)} mods locais…")
+        for i, src_path in enumerate(bundled, start=1):
+            shutil.copy2(src_path, dst / src_path.name)
+            if tracker:
+                tracker.set_counts(i, len(bundled), f"Mods: {src_path.name}")
+        if tracker:
+            tracker.complete_phase(f"Mods locais ({len(bundled)})")
+        return len(bundled)
+
+    raise FileNotFoundError(
+        "Nenhum modpack instalado nesta instância.\n"
+        "Clique em + Modpack e instale pelo catálogo do GitHub Releases."
+    )

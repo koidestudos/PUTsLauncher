@@ -26,7 +26,6 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
           Copy-Item dist\PUTsLauncher.exe release\
-          Copy-Item -Recurse mods release\mods
           Copy-Item README.md release\
 
       - name: Upload artifact

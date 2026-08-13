@@ -390,17 +390,37 @@ def install_modpack(
             zip_path.unlink(missing_ok=True)
             raise RuntimeError(f"SHA256 inválido para {pack.id} (esperado {pack.sha256[:12]}…)")
 
-    inst = create_instance(
-        instance_name or pack.name,
-        modpack_id=pack.id,
-        modpack_version=pack.version,
-        mc_version=pack.mc_version or MC_VERSION,
-        forge_version=pack.loader_version or FORGE_VERSION,
-        server_ip=pack.server_ip,
-        server_port=pack.server_port,
-        source="github",
-        instance_id=pack.id,
-    )
+    from launcher.core.instances import GameInstance
+
+    existing = GameInstance.load(pack.id) if pack.id else None
+    if existing:
+        inst = existing
+        inst.name = instance_name or pack.name or inst.name
+        inst.modpack_id = pack.id
+        inst.modpack_version = pack.version
+        inst.mc_version = pack.mc_version or inst.mc_version
+        inst.forge_version = pack.loader_version or inst.forge_version
+        inst.server_ip = pack.server_ip
+        inst.server_port = pack.server_port
+        inst.source = "github"
+        from launcher.core.installer import forge_profile_id, normalize_forge_install_version
+
+        inst.forge_version = normalize_forge_install_version(inst.mc_version, inst.forge_version)
+        inst.forge_profile = forge_profile_id(inst.mc_version, inst.forge_version)
+        inst.ensure_dirs()
+        inst.save_meta()
+    else:
+        inst = create_instance(
+            instance_name or pack.name,
+            modpack_id=pack.id,
+            modpack_version=pack.version,
+            mc_version=pack.mc_version or MC_VERSION,
+            forge_version=pack.loader_version or FORGE_VERSION,
+            server_ip=pack.server_ip,
+            server_port=pack.server_port,
+            source="github",
+            instance_id=pack.id,
+        )
     install_modpack_zip(zip_path, inst, tracker=tracker)
     inst.modpack_id = pack.id
     inst.modpack_version = pack.version

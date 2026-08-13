@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import zipfile
 
+import pytest
+
 from launcher.auth.session import offline_session
 from launcher.config import FORGE_PROFILE, MC_VERSION, mods_source_dir, puts_home
 from launcher.core.mods import list_bundled_mods, sync_mods
@@ -21,16 +23,16 @@ def test_offline_session_trims_and_limits():
     assert len(s.username) <= 16
 
 
-def test_pack_has_forge_mods():
-    mods = list_bundled_mods()
-    assert len(mods) >= 100
+def test_launcher_defaults_without_bundled_mods():
+    # mods/ is no longer shipped with the launcher download
+    assert list_bundled_mods() == []
     assert mods_source_dir().name == "mods"
     assert MC_VERSION == "1.18.2"
     assert "forge" in FORGE_PROFILE
     assert puts_home().name == "MinecraftPUTS"
 
 
-def test_sync_mods_roundtrip(tmp_path, monkeypatch):
+def test_sync_mods_from_github_instance(tmp_path, monkeypatch):
     import launcher.config as config
     import launcher.core.instances as instances
     import launcher.core.mods as mods_mod
@@ -38,18 +40,37 @@ def test_sync_mods_roundtrip(tmp_path, monkeypatch):
     home = tmp_path / "MinecraftPUTS"
     monkeypatch.setattr(config, "puts_home", lambda: home)
     monkeypatch.setattr(instances, "puts_home", lambda: home)
-    # Reset process-wide active dir so instance helpers use the patched home
+    instances._active_mc = None
+    instances._active_id = ""
+
+    inst = instances.create_instance("PUTs SMP", source="github", instance_id="puts-smp", modpack_id="puts-smp")
+    instances.activate_instance(inst.id)
+    monkeypatch.setattr(mods_mod, "minecraft_dir", instances.get_active_minecraft_dir)
+
+    jar = inst.minecraft_path / "mods" / "demo.jar"
+    jar.parent.mkdir(parents=True, exist_ok=True)
+    jar.write_bytes(b"jar")
+
+    assert sync_mods() == 1
+
+
+def test_sync_mods_requires_catalog_pack(tmp_path, monkeypatch):
+    import launcher.config as config
+    import launcher.core.instances as instances
+    import launcher.core.mods as mods_mod
+
+    home = tmp_path / "MinecraftPUTS"
+    monkeypatch.setattr(config, "puts_home", lambda: home)
+    monkeypatch.setattr(instances, "puts_home", lambda: home)
     instances._active_mc = None
     instances._active_id = ""
     instances.ensure_default_instance()
-    instances.activate_instance("puts-smp")
-
+    instances.activate_instance("default")
     monkeypatch.setattr(mods_mod, "minecraft_dir", instances.get_active_minecraft_dir)
+    monkeypatch.setattr(mods_mod, "mods_source_dir", lambda: tmp_path / "no-mods-here")
 
-    n = sync_mods()
-    assert n == len(list_bundled_mods())
-    mc = instances.get_active_minecraft_dir()
-    assert len(list((mc / "mods").glob("*.jar"))) == n
+    with pytest.raises(FileNotFoundError, match="Modpack"):
+        sync_mods()
 
 
 def test_is_game_ready_false_on_empty(tmp_path, monkeypatch):
@@ -84,8 +105,8 @@ def test_instances_create_and_activate(tmp_path, monkeypatch):
     instances._active_id = ""
 
     default = instances.ensure_default_instance()
-    assert default.id == "puts-smp"
-    assert (home / "instances" / "puts-smp" / "minecraft").is_dir()
+    assert default.id == "default"
+    assert (home / "instances" / "default" / "minecraft").is_dir()
 
     other = instances.create_instance("Meu Pack", source="local")
     assert other.id == "meu-pack"
@@ -189,7 +210,6 @@ def test_packs_from_release_zips():
     ]
     packs = _packs_from_release_zips(releases)
     assert len(packs) == 1
-    assert packs[0].id == "v1-2-0" or packs[0].id == "v1.2.0" or "puts" in packs[0].id or packs[0].version == "1.2.0"
     assert packs[0].version == "1.2.0"
     assert packs[0].download_url.endswith("puts-smp.zip")
     assert "Pack oficial" in packs[0].description
@@ -217,7 +237,7 @@ def test_packs_from_index_resolves_asset_names():
 def test_already_exists_error_helper():
     import errno
 
-    from launcher.core.installer import _is_already_exists_error, clean_version_natives
+    from launcher.core.installer import _is_already_exists_error
 
     e = OSError(errno.EEXIST, "exists")
     e.winerror = 183

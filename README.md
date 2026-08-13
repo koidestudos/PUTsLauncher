@@ -1,40 +1,29 @@
 # PUTs Launcher
 
-Launcher do SMP com visual maracujá — Forge **1.18.2** + mods da pasta `mods`.
+Launcher do SMP com visual maracujá. Mods vêm do **GitHub Releases** (`+ Modpack`), não junto do EXE.
 
 ## Fluxo
 
-1. **BAIXAR** — aparece a barra de % / status / tempo restante  
-   Salva em `MinecraftPUTS/` (Java compartilhado + instância ativa)
-2. Quando já está baixado, o botão vira **JOGAR**
-3. Conta **Offline** (nick) ou **Microsoft** (login no navegador + skin 3D)
-4. **Instâncias** — troque de pack no menu; **+ Modpack** instala catálogo do **GitHub Releases**
+1. Em **Opções**, configure o catálogo: `dono/repo` (ex.: `koidestudos/PUTsModpacks`)
+2. **+ Modpack** → instala o pack (ex.: PUTs SMP) do Release
+3. **BAIXAR** → Java + Forge daquela instância
+4. **JOGAR** — Offline ou Microsoft
 
-## Instâncias + GitHub Releases
+## Distribuição
 
-```text
-~/MinecraftPUTS/
-  shared/          # Java 17
-  instances/
-    puts-smp/minecraft/
-    meu-pack/minecraft/
-  launcher_config.json
-```
-
-Em **Opções**, informe `dono/repo` (ex.: `koidestudos/PUTsModpacks`).  
-Docs: [`docs/github-releases-modpacks.md`](docs/github-releases-modpacks.md).
-
-## Windows
-
-```bat
-build_exe.bat
-```
-
-Distribua:
+Só o EXE:
 
 ```text
 PUTsLauncher.exe
-mods\*.jar
+```
+
+Os zips de modpack ficam no **GitHub Releases** + `index.json`.  
+Docs: [`docs/github-releases-modpacks.md`](docs/github-releases-modpacks.md).
+
+## Windows build
+
+```bat
+build_exe.bat
 ```
 
 ## Dev

@@ -8,6 +8,6 @@ python -m PyInstaller --noconfirm PUTsLauncher.spec
 
 echo.
 echo Pronto: dist\PUTsLauncher.exe
-echo Copie a pasta "mods" para o mesmo diretorio do .exe antes de distribuir.
+echo Mods NAO vao junto — publique os packs no GitHub Releases (+ Modpack).
 echo.
 pause

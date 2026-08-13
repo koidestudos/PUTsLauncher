@@ -110,7 +110,7 @@ class LauncherConfig:
     render_distance: int = 0
     extra_jvm_args: str = ""
     # Instances + GitHub Releases modpacks
-    active_instance_id: str = "puts-smp"
+    active_instance_id: str = "default"
     instances: list = field(default_factory=list)  # [{id,name,...}] mirror
     # owner/repo  OR  https://github.com/.../releases/download/.../index.json
     modpack_catalog: str = ""
@@ -162,10 +162,10 @@ def bootstrap_instances(cfg: Optional["LauncherConfig"] = None) -> "LauncherConf
     if cfg is None:
         cfg = LauncherConfig.load()
     ensure_default_instance()
-    wanted = (cfg.active_instance_id or "puts-smp").strip() or "puts-smp"
+    wanted = (cfg.active_instance_id or "default").strip() or "default"
     ids = {i.id for i in list_instances()}
     if wanted not in ids:
-        wanted = "puts-smp" if "puts-smp" in ids else next(iter(ids))
+        wanted = "default" if "default" in ids else next(iter(ids))
     inst = activate_instance(wanted)
     apply_instance_to_config(cfg, inst)
     return cfg
