@@ -132,7 +132,11 @@ def prepare_and_launch(
     tracker: Optional[ProgressTracker] = None,
     cancel_event=None,
 ) -> subprocess.Popen:
-    from launcher.core.installer import CancelledError
+    from launcher.core.installer import (
+        CancelledError,
+        _is_already_exists_error,
+        clean_version_natives,
+    )
 
     if tracker is None:
         tracker = ProgressTracker(DEFAULT_PHASES)
@@ -145,7 +149,14 @@ def prepare_and_launch(
         raise CancelledError("Cancelado.")
 
     tracker.set_phase("launch", f"Abrindo Minecraft como {session.username}…")
-    command = build_launch_command(cfg, session, java)
+    try:
+        command = build_launch_command(cfg, session, java)
+    except BaseException as exc:
+        # Native extract can hit WinError 183; wipe natives and rebuild once.
+        if not _is_already_exists_error(exc):
+            raise
+        clean_version_natives()
+        command = build_launch_command(cfg, session, java)
     mc_dir = str(minecraft_dir())
 
     log_path = logs_dir() / "minecraft_stdout.log"

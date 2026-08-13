@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 from pathlib import Path
@@ -23,6 +24,62 @@ from launcher.core.progress import ProgressTracker
 def forge_installed(mc_dir: Optional[Path] = None) -> bool:
     root = Path(mc_dir or minecraft_dir())
     return (root / "versions" / FORGE_PROFILE / f"{FORGE_PROFILE}.json").exists()
+
+
+def _wipe_path(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def _is_already_exists_error(exc: BaseException) -> bool:
+    """Windows WinError 183 / FileExistsError during natives extract."""
+    if isinstance(exc, FileExistsError):
+        return True
+    if isinstance(exc, OSError):
+        if getattr(exc, "winerror", None) == 183:
+            return True
+        if exc.errno in {errno.EEXIST, getattr(errno, "EISDIR", 21)}:
+            return True
+    msg = str(exc).lower()
+    return "já existente" in msg or "already exists" in msg
+
+
+def clean_version_natives(mc_dir: Optional[Path] = None) -> None:
+    """
+    Remove extracted natives folders that often break on Windows (WinError 183)
+    when a file/dir name collide under natives/META-INF/...
+    """
+    root = Path(mc_dir or minecraft_dir())
+    versions = root / "versions"
+    if not versions.exists():
+        return
+    targets = {
+        FORGE_PROFILE,
+        MC_VERSION,
+        FORGE_VERSION,
+    }
+    for child in versions.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name in targets or "forge" in child.name.lower() or child.name.startswith(MC_VERSION):
+            _wipe_path(child / "natives")
+
+
+def clean_incomplete_forge(mc_dir: Optional[Path] = None) -> None:
+    """If Forge profile folder exists without version json, wipe it for a clean reinstall."""
+    root = Path(mc_dir or minecraft_dir())
+    forge_dir = root / "versions" / FORGE_PROFILE
+    if forge_dir.exists() and not (forge_dir / f"{FORGE_PROFILE}.json").exists():
+        _wipe_path(forge_dir)
+    # Vanilla version half-extracted natives can also poison forge install
+    clean_version_natives(root)
 
 
 def java_runtime_path(mc_dir: Optional[Path] = None) -> Optional[str]:
@@ -78,8 +135,9 @@ def ensure_java(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None) 
     return path
 
 def ensure_forge(tracker: Optional[ProgressTracker] = None) -> str:
-    mc = str(minecraft_dir())
-    if forge_installed():
+    mc_path = minecraft_dir()
+    mc = str(mc_path)
+    if forge_installed(mc_path):
         if tracker:
             tracker.set_phase("forge", f"Forge {FORGE_VERSION} já instalado")
             tracker.complete_phase("Forge pronto")
@@ -92,11 +150,32 @@ def ensure_forge(tracker: Optional[ProgressTracker] = None) -> str:
         tracker.set_phase("forge", f"Baixando Minecraft {MC_VERSION} + Forge…")
     callback = tracker.as_mll_callback("forge") if tracker else None
 
-    # Forge installer needs a working Java on PATH / JAVA_HOME for processors.
-    # Ensure we at least attempt with whatever we have; caller should install Java first.
-    mll.forge.install_forge_version(FORGE_VERSION, mc, callback=callback)
+    # Clear leftover natives from a previous failed install (common WinError 183).
+    clean_incomplete_forge(mc_path)
 
-    if not forge_installed():
+    last_err: Optional[BaseException] = None
+    for attempt in range(2):
+        try:
+            mll.forge.install_forge_version(FORGE_VERSION, mc, callback=callback)
+            last_err = None
+            break
+        except BaseException as exc:
+            last_err = exc
+            if attempt == 0 and _is_already_exists_error(exc):
+                if tracker:
+                    tracker.set_detail("Limpando natives corrompidos (Windows)…")
+                clean_version_natives(mc_path)
+                # Drop incomplete forge profile so install can recreate paths cleanly
+                forge_dir = mc_path / "versions" / FORGE_PROFILE
+                if forge_dir.exists() and not (forge_dir / f"{FORGE_PROFILE}.json").exists():
+                    _wipe_path(forge_dir)
+                continue
+            raise
+
+    if last_err is not None:
+        raise last_err
+
+    if not forge_installed(mc_path):
         raise RuntimeError("Forge não foi instalado corretamente. Tente de novo.")
     if tracker:
         tracker.complete_phase("Forge instalado")
@@ -107,7 +186,6 @@ def _run_forge_with_java(java_path: str, tracker: Optional[ProgressTracker] = No
     """
     Install Forge while forcing JAVA_HOME/PATH so the Forge processors use our Java 17.
     """
-    mc = str(minecraft_dir())
     if forge_installed():
         if tracker:
             tracker.set_phase("forge", f"Forge {FORGE_VERSION} já instalado")

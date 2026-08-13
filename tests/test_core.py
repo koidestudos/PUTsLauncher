@@ -206,3 +206,29 @@ def test_packs_from_index_resolves_asset_names():
         asset_urls={"lite.zip": "https://example.com/lite.zip"},
     )
     assert packs[0].download_url == "https://example.com/lite.zip"
+
+
+def test_already_exists_error_helper():
+    import errno
+
+    from launcher.core.installer import _is_already_exists_error, clean_version_natives
+
+    e = OSError(errno.EEXIST, "exists")
+    e.winerror = 183
+    assert _is_already_exists_error(e)
+    assert _is_already_exists_error(FileExistsError("x"))
+    assert not _is_already_exists_error(ValueError("nope"))
+
+
+def test_clean_version_natives(tmp_path, monkeypatch):
+    import launcher.core.installer as inst
+    from launcher.config import FORGE_PROFILE
+    from launcher.core.installer import clean_version_natives
+
+    mc = tmp_path / "mc"
+    natives = mc / "versions" / FORGE_PROFILE / "natives" / "META-INF"
+    natives.mkdir(parents=True)
+    (natives / "versions").write_text("conflict", encoding="utf-8")
+    monkeypatch.setattr(inst, "minecraft_dir", lambda: mc)
+    clean_version_natives(mc)
+    assert not (mc / "versions" / FORGE_PROFILE / "natives").exists()
