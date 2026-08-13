@@ -33,7 +33,6 @@ from launcher.config import (
     LauncherConfig,
     asset_path,
     bootstrap_instances,
-    mods_source_dir,
     puts_home,
 )
 from launcher.core import (
@@ -45,7 +44,6 @@ from launcher.core import (
     fetch_modpack_index,
     install_modpack,
     is_game_ready,
-    list_bundled_mods,
     list_instance_mods,
     list_instances,
     prepare_and_launch,
