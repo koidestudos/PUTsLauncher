@@ -43,7 +43,7 @@ from launcher.core import (
     ProgressTracker,
     activate_instance,
     fetch_modpack_index,
-    install_modpack_from_r2,
+    install_modpack,
     is_game_ready,
     list_bundled_mods,
     list_instances,
@@ -714,18 +714,19 @@ class PUTsLauncherApp(ctk.CTk):
         self._refresh_ready_state()
 
     def _open_modpack_catalog(self) -> None:
-        url = (self.cfg.modpack_index_url or "").strip()
+        url = self.cfg.catalog_source()
         if not url:
             messagebox.showinfo(
-                "Catálogo R2",
-                "Configure a URL do índice de modpacks em Opções.\n\n"
-                "Ex.: https://pub-XXXX.r2.dev/modpacks/index.json",
+                "Catálogo GitHub",
+                "Configure o repositório de releases em Opções.\n\n"
+                "Ex.: koidestudos/PUTsModpacks\n"
+                "ou a URL do index.json de um Release.",
             )
             self._open_options()
             return
 
         win = ctk.CTkToplevel(self)
-        win.title("Modpacks (Cloudflare R2)")
+        win.title("Modpacks (GitHub Releases)")
         win.geometry("520x560")
         win.configure(fg_color=COLORS["bg1"])
         win.transient(self)
@@ -745,9 +746,9 @@ class PUTsLauncherApp(ctk.CTk):
             if err:
                 status.configure(text=str(err), text_color=COLORS["danger"])
                 return
-            status.configure(text=f"{len(packs)} modpack(s) no R2", text_color=COLORS["muted"])
+            status.configure(text=f"{len(packs)} modpack(s) no GitHub", text_color=COLORS["muted"])
             if not packs:
-                ctk.CTkLabel(scroll, text="Nenhum modpack no índice.", text_color=COLORS["muted"]).pack()
+                ctk.CTkLabel(scroll, text="Nenhum modpack no catálogo.", text_color=COLORS["muted"]).pack()
                 return
             for pack in packs:
                 card = ctk.CTkFrame(scroll, fg_color=COLORS["panel"], corner_radius=14)
@@ -810,7 +811,7 @@ class PUTsLauncherApp(ctk.CTk):
         def job():
             tracker = ProgressTracker({"mods": 0.55, "java": 0.2, "forge": 0.25})
             tracker.on_update = lambda s: self.after(0, lambda: self._set_progress_ui(s))
-            inst = install_modpack_from_r2(pack, tracker=tracker)
+            inst = install_modpack(pack, tracker=tracker)
             activate_instance(inst.id)
             apply_instance_to_config(self.cfg, inst)
             # Install Java/Forge into the new instance game dir
@@ -1333,21 +1334,21 @@ class PUTsLauncherApp(ctk.CTk):
             side="left"
         )
 
-        ctk.CTkLabel(scroll, text="Catálogo de modpacks (Cloudflare R2)", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(
+        ctk.CTkLabel(scroll, text="Catálogo de modpacks (GitHub Releases)", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(
             anchor="w", pady=(14, 4)
         )
-        idx_var = ctk.StringVar(value=self.cfg.modpack_index_url or "")
+        idx_var = ctk.StringVar(value=self.cfg.catalog_source())
         ctk.CTkEntry(
             scroll,
             textvariable=idx_var,
-            placeholder_text="https://pub-XXXX.r2.dev/modpacks/index.json",
+            placeholder_text="dono/repo  ou  URL do index.json no Release",
             fg_color=COLORS["input_bg"],
             border_color=COLORS["input_border"],
             text_color=COLORS["text"],
         ).pack(fill="x")
         ctk.CTkLabel(
             scroll,
-            text="JSON público no R2 listando os packs (id, name, version, download_url…).",
+            text="Ex.: koidestudos/PUTsModpacks — lista releases/zips, ou um index.json anexado ao Release.",
             font=FONTS["tiny"],
             text_color=COLORS["muted"],
             wraplength=380,
@@ -1380,7 +1381,8 @@ class PUTsLauncherApp(ctk.CTk):
             except Exception:
                 self.cfg.server_port = 25565
             self.cfg.extra_jvm_args = jvm_box.get().strip()
-            self.cfg.modpack_index_url = idx_var.get().strip()
+            self.cfg.modpack_catalog = idx_var.get().strip()
+            self.cfg.modpack_index_url = ""  # legacy cleared after migrate
             if getattr(self, "ram_slider", None) is not None:
                 self.cfg.ram_gb = int(round(self.ram_slider.get()))
             self.cfg.save()

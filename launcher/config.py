@@ -77,8 +77,8 @@ def cache_dir() -> Path:
     return path
 
 
-# Default public catalog URL (Cloudflare R2). Override in Opções.
-DEFAULT_MODPACK_INDEX_URL = ""
+# Default GitHub Releases catalog: "owner/repo" or HTTPS index.json URL.
+DEFAULT_MODPACK_CATALOG = ""
 
 
 @dataclass
@@ -109,9 +109,12 @@ class LauncherConfig:
     use_string_dedup: bool = False
     render_distance: int = 0
     extra_jvm_args: str = ""
-    # Instances + R2 modpacks
+    # Instances + GitHub Releases modpacks
     active_instance_id: str = "puts-smp"
     instances: list = field(default_factory=list)  # [{id,name,...}] mirror
+    # owner/repo  OR  https://github.com/.../releases/download/.../index.json
+    modpack_catalog: str = ""
+    # legacy key from R2 era — migrated on load
     modpack_index_url: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -134,9 +137,17 @@ class LauncherConfig:
             if (cfg.azure_client_id or "").strip() in broken:
                 cfg.azure_client_id = ""
                 cfg.save()
+            # Migrate old R2 URL field → GitHub catalog
+            if not (cfg.modpack_catalog or "").strip() and (cfg.modpack_index_url or "").strip():
+                cfg.modpack_catalog = cfg.modpack_index_url.strip()
+                cfg.modpack_index_url = ""
+                cfg.save()
             return cfg
         except Exception:
             return cls()
+
+    def catalog_source(self) -> str:
+        return (self.modpack_catalog or self.modpack_index_url or DEFAULT_MODPACK_CATALOG or "").strip()
 
     def save(self) -> None:
         path = config_path()

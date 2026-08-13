@@ -8,11 +8,9 @@ Launcher do SMP com visual maracujá — Forge **1.18.2** + mods da pasta `mods`
    Salva em `MinecraftPUTS/` (Java compartilhado + instância ativa)
 2. Quando já está baixado, o botão vira **JOGAR**
 3. Conta **Offline** (nick) ou **Microsoft** (login no navegador + skin 3D)
-4. **Instâncias** — troque de pack no menu; **+ Modpack** instala catálogo do Cloudflare R2
+4. **Instâncias** — troque de pack no menu; **+ Modpack** instala catálogo do **GitHub Releases**
 
-## Instâncias + R2
-
-Pasta por pack:
+## Instâncias + GitHub Releases
 
 ```text
 ~/MinecraftPUTS/
@@ -23,7 +21,8 @@ Pasta por pack:
   launcher_config.json
 ```
 
-Configure a URL do índice em **Opções**. Documentação: [`docs/r2-modpacks.md`](docs/r2-modpacks.md).
+Em **Opções**, informe `dono/repo` (ex.: `koidestudos/PUTsModpacks`).  
+Docs: [`docs/github-releases-modpacks.md`](docs/github-releases-modpacks.md).
 
 ## Windows
 

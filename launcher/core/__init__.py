@@ -15,7 +15,7 @@ from launcher.core.instances import (
     list_instances,
 )
 from launcher.core.launch import DEFAULT_PHASES, build_launch_command, prepare_and_launch
-from launcher.core.modpacks import ModpackInfo, fetch_modpack_index, install_modpack_from_r2
+from launcher.core.modpacks import ModpackInfo, fetch_modpack_index, install_modpack
 from launcher.core.mods import list_bundled_mods, sync_mods
 from launcher.core.progress import ProgressState, ProgressTracker
 
@@ -32,7 +32,7 @@ __all__ = [
     "delete_instance",
     "fetch_modpack_index",
     "forge_installed",
-    "install_modpack_from_r2",
+    "install_modpack",
     "is_game_ready",
     "list_bundled_mods",
     "list_instances",

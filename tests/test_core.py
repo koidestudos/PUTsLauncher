@@ -129,7 +129,7 @@ def test_install_modpack_zip(tmp_path, monkeypatch):
     instances._active_mc = None
     instances._active_id = ""
 
-    inst = instances.create_instance("Zip Pack", source="r2", instance_id="zip-pack")
+    inst = instances.create_instance("Zip Pack", source="github", instance_id="zip-pack")
     zpath = tmp_path / "pack.zip"
     with zipfile.ZipFile(zpath, "w") as zf:
         zf.writestr("mods/example-mod.jar", b"fake-jar")
@@ -148,3 +148,61 @@ def test_forge_profile_helper():
     assert _forge_profile("1.18.2", "1.18.2-40.3.11") == "1.18.2-forge-40.3.11"
     assert _forge_profile("1.18.2", "1.18.2-forge-40.3.11") == "1.18.2-forge-40.3.11"
     assert _forge_profile("1.18.2", "40.3.11") == "1.18.2-forge-40.3.11"
+
+
+def test_parse_github_repo():
+    from launcher.core.modpacks import parse_github_repo
+
+    assert parse_github_repo("koidestudos/PUTsModpacks") == ("koidestudos", "PUTsModpacks")
+    assert parse_github_repo("https://github.com/koidestudos/PUTsModpacks") == (
+        "koidestudos",
+        "PUTsModpacks",
+    )
+    assert parse_github_repo("https://github.com/koidestudos/PUTsModpacks.git") == (
+        "koidestudos",
+        "PUTsModpacks",
+    )
+    assert parse_github_repo("") is None
+
+
+def test_packs_from_release_zips():
+    from launcher.core.modpacks import _packs_from_release_zips
+
+    releases = [
+        {
+            "tag_name": "v1.2.0",
+            "name": "PUTs SMP",
+            "body": "Pack oficial.\n\nDetalhes longos…",
+            "assets": [
+                {
+                    "name": "puts-smp.zip",
+                    "browser_download_url": "https://github.com/o/r/releases/download/v1.2.0/puts-smp.zip",
+                }
+            ],
+        }
+    ]
+    packs = _packs_from_release_zips(releases)
+    assert len(packs) == 1
+    assert packs[0].id == "v1-2-0" or packs[0].id == "v1.2.0" or "puts" in packs[0].id or packs[0].version == "1.2.0"
+    assert packs[0].version == "1.2.0"
+    assert packs[0].download_url.endswith("puts-smp.zip")
+    assert "Pack oficial" in packs[0].description
+
+
+def test_packs_from_index_resolves_asset_names():
+    from launcher.core.modpacks import _packs_from_index_payload
+
+    data = {
+        "modpacks": [
+            {
+                "id": "lite",
+                "name": "Lite",
+                "download_url": "lite.zip",
+            }
+        ]
+    }
+    packs = _packs_from_index_payload(
+        data,
+        asset_urls={"lite.zip": "https://example.com/lite.zip"},
+    )
+    assert packs[0].download_url == "https://example.com/lite.zip"

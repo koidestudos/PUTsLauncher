@@ -38,7 +38,7 @@ class GameInstance:
     modpack_version: str = ""
     server_ip: str = ""
     server_port: int = 25565
-    source: str = "local"  # local | r2 | bundled
+    source: str = "local"  # local | github | bundled | r2 (legacy)
     created_at: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
