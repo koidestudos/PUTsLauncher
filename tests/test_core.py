@@ -51,6 +51,12 @@ def test_sync_mods_from_github_instance(tmp_path, monkeypatch):
     jar.parent.mkdir(parents=True, exist_ok=True)
     jar.write_bytes(b"jar")
 
+    # Avoid network: stub Ely.by injector
+    monkeypatch.setattr(
+        "launcher.core.skins_mod.ensure_elyby_skins_mod",
+        lambda *a, **k: jar,
+    )
+
     assert sync_mods() == 1
 
 
@@ -258,3 +264,56 @@ def test_clean_version_natives(tmp_path, monkeypatch):
     monkeypatch.setattr(inst, "minecraft_dir", lambda: mc)
     clean_version_natives(mc)
     assert not (mc / "versions" / FORGE_PROFILE / "natives").exists()
+
+
+def test_resolve_skins_mod_versions():
+    from launcher.core.skins_mod import resolve_skins_mod
+
+    a = resolve_skins_mod("1.18.2")
+    assert "ForgeV2" in a.filename
+    b = resolve_skins_mod("1.20.1")
+    assert "ForgeV2" in b.filename
+    c = resolve_skins_mod("1.21.1")
+    assert "Universal" in c.filename
+
+
+def test_elyby_config_priority():
+    from launcher.core.skins_mod import elyby_priority_config
+
+    cfg = elyby_priority_config()
+    types = [x["type"] for x in cfg["loadlist"]]
+    assert "ElyByAPI" in types
+    # ElyBy before Mojang so offline nicks resolve on ely.by
+    assert types.index("ElyByAPI") < types.index("MojangAPI")
+
+
+def test_ensure_elyby_skins_mod_copies_jar(tmp_path, monkeypatch):
+    import launcher.config as config
+    import launcher.core.skins_mod as skins
+
+    home = tmp_path / "MinecraftPUTS"
+    monkeypatch.setattr(config, "puts_home", lambda: home)
+    monkeypatch.setattr(skins, "cache_dir", lambda: home / "cache")
+
+    fake = tmp_path / "fake-csl.jar"
+    fake.write_bytes(b"x" * 20_000)
+
+    def fake_cached(artifact):
+        dest = home / "cache" / "skins_mod" / artifact.filename
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(fake.read_bytes())
+        return dest
+
+    monkeypatch.setattr(skins, "cached_skins_mod_jar", fake_cached)
+
+    mc = tmp_path / "instance" / "minecraft"
+    (mc / "mods").mkdir(parents=True)
+    out = skins.ensure_elyby_skins_mod(mc, mc_version="1.20.1")
+    assert out.exists()
+    assert out.name.startswith("CustomSkinLoader_ForgeV2")
+    cfg = mc / "CustomSkinLoader" / "CustomSkinLoader.json"
+    assert cfg.exists()
+    import json
+
+    data = json.loads(cfg.read_text(encoding="utf-8"))
+    assert any(x.get("type") == "ElyByAPI" for x in data["loadlist"])

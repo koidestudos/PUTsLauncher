@@ -104,3 +104,12 @@ options.txt      (opcional)
 Java fica em `~/MinecraftPUTS/shared/`. Cada pack em `~/MinecraftPUTS/instances/<id>/minecraft/`.
 
 O download do launcher **não** inclui pasta `mods`. Tudo sobe pelo Release.
+
+## Skins no modo offline (Ely.by)
+
+Em **todo** modpack o launcher instala automaticamente o **CustomSkinLoader** com **Ely.by** na frente da lista.
+
+1. Crie conta grátis em https://ely.by e envie a skin
+2. No launcher (Offline), use o **mesmo nick** da conta Ely.by
+3. Abra o jogo — a skin carrega sem Microsoft
+

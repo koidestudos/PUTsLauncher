@@ -31,6 +31,7 @@ def sync_mods(tracker: Optional[ProgressTracker] = None) -> int:
 
     Packs come from GitHub Releases (+ Modpack). The launcher no longer ships
     a puts-smp /mods folder in the download.
+    Always injects CustomSkinLoader (Ely.by) for offline skins.
     """
     try:
         from launcher.core.instances import GameInstance, get_active_id
@@ -47,15 +48,35 @@ def sync_mods(tracker: Optional[ProgressTracker] = None) -> int:
     if inst and inst.source in {"github", "r2"}:
         if tracker:
             tracker.set_phase("mods", f"Modpack — {n} mods")
-            tracker.complete_phase(f"Mods do pack ({n})" if n else "Modpack sem jars?")
         if n == 0:
             raise FileNotFoundError(
                 "Esta instância não tem mods.\n"
                 "Instale de novo pelo + Modpack (catálogo GitHub)."
             )
+        try:
+            from launcher.core.skins_mod import ensure_elyby_skins_mod
+
+            ensure_elyby_skins_mod(minecraft_dir(), mc_version=inst.mc_version or "", tracker=tracker)
+        except Exception as exc:
+            if tracker:
+                tracker.set_detail(f"Aviso skins Ely.by: {exc}")
+        n = len(list(dst.glob("*.jar")))
+        if tracker:
+            tracker.complete_phase(f"Mods do pack ({n})")
         return n
 
     if n:
+        try:
+            from launcher.core.skins_mod import ensure_elyby_skins_mod
+
+            ensure_elyby_skins_mod(
+                minecraft_dir(),
+                mc_version=(inst.mc_version if inst else "") or "",
+                tracker=tracker,
+            )
+        except Exception:
+            pass
+        n = len(list(dst.glob("*.jar")))
         if tracker:
             tracker.set_phase("mods", f"Usando {n} mods da instância")
             tracker.complete_phase("Mods OK")
@@ -72,9 +93,15 @@ def sync_mods(tracker: Optional[ProgressTracker] = None) -> int:
             shutil.copy2(src_path, dst / src_path.name)
             if tracker:
                 tracker.set_counts(i, len(bundled), f"Mods: {src_path.name}")
+        try:
+            from launcher.core.skins_mod import ensure_elyby_skins_mod
+
+            ensure_elyby_skins_mod(minecraft_dir(), tracker=tracker)
+        except Exception:
+            pass
         if tracker:
-            tracker.complete_phase(f"Mods locais ({len(bundled)})")
-        return len(bundled)
+            tracker.complete_phase(f"Mods locais ({len(list(dst.glob('*.jar')))})")
+        return len(list(dst.glob("*.jar")))
 
     raise FileNotFoundError(
         "Nenhum modpack instalado nesta instância.\n"

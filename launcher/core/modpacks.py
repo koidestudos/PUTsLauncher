@@ -363,6 +363,13 @@ def install_modpack_zip(zip_path: Path, instance: GameInstance, tracker: Optiona
                 tracker.set_counts(i, total, f"Extraindo: {Path(name).name}")
 
     instance.save_meta()
+    try:
+        from launcher.core.skins_mod import ensure_elyby_skins_mod
+
+        ensure_elyby_skins_mod(mc, mc_version=instance.mc_version or "", tracker=tracker)
+    except Exception as exc:
+        if tracker:
+            tracker.set_detail(f"Aviso: não deu pra instalar skins Ely.by ({exc})")
     if tracker:
         tracker.complete_phase("Modpack extraído")
 
