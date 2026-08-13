@@ -143,11 +143,17 @@ def test_install_modpack_zip(tmp_path, monkeypatch):
 
 
 def test_forge_profile_helper():
+    from launcher.core.installer import forge_profile_id, normalize_forge_install_version
     from launcher.core.instances import _forge_profile
 
+    assert normalize_forge_install_version("1.18.2", "1.18.2-40.3.11") == "1.18.2-40.3.11"
+    assert normalize_forge_install_version("1.20.1", "47.4.10") == "1.20.1-47.4.10"
+    assert normalize_forge_install_version("1.20.1", "1.20.1-forge-47.4.10") == "1.20.1-47.4.10"
+    assert forge_profile_id("1.20.1", "1.20.1-47.4.10") == "1.20.1-forge-47.4.10"
     assert _forge_profile("1.18.2", "1.18.2-40.3.11") == "1.18.2-forge-40.3.11"
     assert _forge_profile("1.18.2", "1.18.2-forge-40.3.11") == "1.18.2-forge-40.3.11"
     assert _forge_profile("1.18.2", "40.3.11") == "1.18.2-forge-40.3.11"
+    assert _forge_profile("1.20.1", "47.4.10") == "1.20.1-forge-47.4.10"
 
 
 def test_parse_github_repo():

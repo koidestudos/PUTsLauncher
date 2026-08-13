@@ -83,10 +83,13 @@ def _jvm_arguments(cfg: LauncherConfig) -> list[str]:
 def build_launch_command(cfg: LauncherConfig, session: GameSession, java: str) -> list[str]:
     mc_dir = str(minecraft_dir())
     try:
+        from launcher.core.installer import active_forge_target
         from launcher.core.instances import GameInstance, get_active_id
 
+        _, _, profile = active_forge_target()
         inst = GameInstance.load(get_active_id())
-        profile = (inst.forge_profile if inst else None) or FORGE_PROFILE
+        if inst and inst.forge_profile:
+            profile = inst.forge_profile
     except Exception:
         profile = FORGE_PROFILE
 
@@ -185,9 +188,15 @@ def prepare_and_launch(
 
     if not Path(java).exists():
         raise RuntimeError(f"Java não encontrado: {java}")
-    profile = Path(mc_dir) / "versions" / FORGE_PROFILE / f"{FORGE_PROFILE}.json"
+    from launcher.core.installer import active_forge_target
+
+    _, _, profile_id = active_forge_target()
+    profile = Path(mc_dir) / "versions" / profile_id / f"{profile_id}.json"
     if not profile.exists():
-        raise RuntimeError(f"Perfil Forge ausente: {profile}")
+        raise RuntimeError(
+            f"Perfil Forge ausente: {profile_id}\n"
+            "Clique em BAIXAR de novo para instalar a versão certa desta instância."
+        )
 
     proc = subprocess.Popen(command, **popen_kwargs)
     tracker.complete_phase("Minecraft iniciado")

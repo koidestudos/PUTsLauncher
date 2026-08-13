@@ -17,10 +17,10 @@
       "id": "puts-lite",
       "name": "PUTs Lite",
       "version": "0.2.0",
-      "mc_version": "1.18.2",
+      "mc_version": "1.20.1",
       "loader": "forge",
-      "loader_version": "1.18.2-40.3.11",
-      "description": "Versão leve com menos mods.",
+      "forge_version": "47.4.10",
+      "description": "Aceita 47.4.10 ou 1.20.1-47.4.10 — o launcher normaliza.",
       "download_url": "https://github.com/OWNER/REPO/releases/download/v0.2.0/puts-lite-0.2.0.zip"
     }
   ]

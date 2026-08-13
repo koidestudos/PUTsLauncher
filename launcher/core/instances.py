@@ -179,13 +179,16 @@ def create_instance(
         n += 1
 
     mv = mc_version or MC_VERSION
-    fv = forge_version or FORGE_VERSION
+    fv_raw = forge_version or FORGE_VERSION
+    from launcher.core.installer import forge_profile_id, normalize_forge_install_version
+
+    fv = normalize_forge_install_version(mv, fv_raw)
     inst = GameInstance(
         id=iid,
         name=name or iid,
         mc_version=mv,
         forge_version=fv,
-        forge_profile=_forge_profile(mv, fv),
+        forge_profile=forge_profile_id(mv, fv),
         modpack_id=modpack_id,
         modpack_version=modpack_version,
         server_ip=server_ip,
@@ -199,16 +202,12 @@ def create_instance(
 
 
 def _forge_profile(mc_version: str, forge_version: str) -> str:
-    """Map forge version string → launcher profile id (e.g. 1.18.2-forge-40.3.11)."""
-    fv = (forge_version or FORGE_VERSION).strip()
+    """Map forge version string → launcher profile id (e.g. 1.20.1-forge-47.4.10)."""
+    from launcher.core.installer import forge_profile_id, normalize_forge_install_version
+
     mv = (mc_version or MC_VERSION).strip()
-    if "-forge-" in fv:
-        return fv
-    if fv.startswith(mv + "-"):
-        return f"{mv}-forge-{fv[len(mv) + 1 :]}"
-    if fv == FORGE_VERSION:
-        return FORGE_PROFILE
-    return f"{mv}-forge-{fv}"
+    install = normalize_forge_install_version(mv, forge_version or FORGE_VERSION)
+    return forge_profile_id(mv, install)
 
 
 def delete_instance(instance_id: str) -> None:

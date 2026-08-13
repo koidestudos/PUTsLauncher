@@ -61,6 +61,24 @@ Exemplo de `index.json`:
 - o **nome do asset** no mesmo Release (`puts-smp-1.0.0.zip`), ou
 - uma URL HTTPS completa (`https://github.com/.../releases/download/.../file.zip`)
 
+### Forge / Minecraft no `index.json`
+
+O launcher instala o Forge **da instância**, não só 1.18.2.
+
+No pack use:
+
+```json
+"mc_version": "1.20.1",
+"forge_version": "47.4.10"
+```
+
+ou
+
+```json
+"mc_version": "1.20.1",
+"forge_version": "1.20.1-47.4.10"
+```
+
 Nomes aceitos para o índice: `index.json`, `modpacks.json`, `catalog.json`.
 
 ## Conteúdo do zip
