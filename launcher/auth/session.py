@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from dataclasses import dataclass
@@ -17,13 +18,24 @@ class GameSession:
     offline: bool = True
 
 
+def offline_uuid(username: str) -> uuid.UUID:
+    """
+    Same UUID Minecraft gives an offline player:
+    ``UUID.nameUUIDFromBytes("OfflinePlayer:<nick>".getBytes(UTF_8))`` — an MD5
+    of *only* those bytes (Python's uuid3 would also hash the DNS namespace, and
+    that produced ids no server or other launcher agrees with).
+    """
+    digest = bytearray(hashlib.md5(f"OfflinePlayer:{username}".encode("utf-8")).digest())
+    digest[6] = (digest[6] & 0x0F) | 0x30  # version 3
+    digest[8] = (digest[8] & 0x3F) | 0x80  # IETF variant
+    return uuid.UUID(bytes=bytes(digest))
+
+
 def offline_session(username: str) -> GameSession:
     name = (username or "Steve").strip()[:16] or "Steve"
-    # Offline UUIDs follow the offline player scheme used by CraftBukkit / Forge offline.
-    offline_uuid = str(uuid.uuid3(uuid.NAMESPACE_DNS, f"OfflinePlayer:{name}"))
     return GameSession(
         username=name,
-        uuid=offline_uuid.replace("-", ""),
+        uuid=offline_uuid(name).hex,
         access_token="0",
         offline=True,
     )

@@ -13,6 +13,7 @@ from launcher.config import FORGE_PROFILE, LauncherConfig, logs_dir, minecraft_d
 from launcher.core.installer import prepare_game, resolve_java, write_launch_log
 from launcher.core.mods import sync_mods
 from launcher.core.progress import ProgressTracker
+from launcher.core.system import clamp_ram_gb
 
 
 DEFAULT_PHASES = {
@@ -24,7 +25,9 @@ DEFAULT_PHASES = {
 
 
 def _jvm_arguments(cfg: LauncherConfig) -> list[str]:
-    ram_gb = max(1, min(int(cfg.ram_gb or 4), 32))
+    # Never hand the JVM more memory than the machine has, even if an old
+    # config (or a hand-edited one) asks for it.
+    ram_gb = clamp_ram_gb(cfg.ram_gb or 4)
     min_gb = max(1, ram_gb // 2) if getattr(cfg, "allocate_min_half_ram", True) else 1
     args = [
         f"-Xmx{ram_gb}G",
@@ -67,9 +70,6 @@ def _jvm_arguments(cfg: LauncherConfig) -> list[str]:
         args.append("-Dorg.lwjgl.vulkan=true")
         args.append("-Dorg.lwjgl.opengl.Display.enableNativeFullscreen=false")
 
-    if getattr(cfg, "disable_vsync", False):
-        args.append("-Dorg.lwjgl.opengl.Display.enableHighDPI=false")
-
     extra = (getattr(cfg, "extra_jvm_args", "") or "").strip()
     if extra:
         try:
@@ -78,6 +78,45 @@ def _jvm_arguments(cfg: LauncherConfig) -> list[str]:
             args.extend(extra.split())
 
     return args
+
+
+def apply_video_options(mc_dir: Path, fullscreen: bool, vsync: bool) -> None:
+    """
+    Keep the video switches of the launcher in sync with options.txt.
+
+    ``--fullscreen`` already covers the launch itself, but writing the setting
+    makes it stick for loaders that build their own argument list — and VSync
+    only exists as a game option, there is no JVM flag for it.
+    """
+    options_file = Path(mc_dir) / "options.txt"
+    if not options_file.exists():
+        return
+    wanted = {
+        "fullscreen": "true" if fullscreen else "false",
+        "enableVsync": "true" if vsync else "false",
+    }
+    try:
+        lines = options_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        key = line.split(":", 1)[0]
+        if key in wanted:
+            out.append(f"{key}:{wanted[key]}")
+            seen.add(key)
+        else:
+            out.append(line)
+    for key, value in wanted.items():
+        if key not in seen:
+            out.append(f"{key}:{value}")
+    if out != lines:
+        try:
+            options_file.write_text("\n".join(out) + "\n", encoding="utf-8")
+        except OSError:
+            pass
 
 
 def build_launch_command(cfg: LauncherConfig, session: GameSession, java: str) -> list[str]:
@@ -104,21 +143,19 @@ def build_launch_command(cfg: LauncherConfig, session: GameSession, java: str) -
         "jvmArguments": _jvm_arguments(cfg),
     }
 
-    if cfg.window_width and cfg.window_height and not getattr(cfg, "fullscreen", False):
+    fullscreen = bool(getattr(cfg, "fullscreen", False))
+    if cfg.window_width and cfg.window_height and not fullscreen:
         options["customResolution"] = True
         options["resolutionWidth"] = str(cfg.window_width)
         options["resolutionHeight"] = str(cfg.window_height)
 
-    # Prefer instance server, then config
-    server_ip = cfg.server_ip
+    # Instance server wins; the address in Opções is the global fallback
+    server_ip = (cfg.server_ip or "").strip()
     server_port = cfg.server_port or 25565
     try:
-        from launcher.core.instances import GameInstance, get_active_id
+        from launcher.core.instances import GameInstance, effective_server, get_active_id
 
-        inst = GameInstance.load(get_active_id())
-        if inst and inst.server_ip:
-            server_ip = inst.server_ip
-            server_port = int(inst.server_port or 25565)
+        server_ip, server_port = effective_server(cfg, GameInstance.load(get_active_id()))
     except Exception:
         pass
 
@@ -126,7 +163,14 @@ def build_launch_command(cfg: LauncherConfig, session: GameSession, java: str) -
         options["server"] = server_ip
         options["port"] = str(server_port)
 
-    return mll.command.get_minecraft_command(profile, mc_dir, options)
+    apply_video_options(Path(mc_dir), fullscreen, not bool(getattr(cfg, "disable_vsync", False)))
+
+    command = mll.command.get_minecraft_command(profile, mc_dir, options)
+    if fullscreen and "--fullscreen" not in command:
+        # minecraft-launcher-lib has no fullscreen option; net.minecraft.client.main.Main
+        # accepts the flag directly (and ignores unknown ones).
+        command.append("--fullscreen")
+    return command
 
 
 def prepare_and_launch(

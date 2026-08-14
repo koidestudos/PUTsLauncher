@@ -174,11 +174,18 @@ def resolve_java(cfg: LauncherConfig, mc_dir: Optional[Path] = None) -> Optional
     return None
 
 
-def ensure_java(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None) -> str:
+def ensure_java(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None, cancel_event=None) -> str:
     """Download Mojang Java 17 into MinecraftPUTS/shared (shared across instances)."""
     shared = puts_home() / "shared"
     shared.mkdir(parents=True, exist_ok=True)
-    existing = resolve_java(cfg, shared)
+    # A Java the user pointed at in the config wins — downloading Mojang's on top
+    # of it would ignore an explicit choice (and fail on a machine without net).
+    chosen = (cfg.java_path or "").strip()
+    if chosen and Path(chosen).exists():
+        if tracker:
+            tracker.set_phase("java", f"Usando Java configurado: {chosen}")
+            tracker.complete_phase("Java pronto")
+        return chosen
     bundled = java_runtime_path(shared)
     if bundled:
         if tracker:
@@ -188,7 +195,7 @@ def ensure_java(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None) 
 
     if tracker:
         tracker.set_phase("java", "Baixando Java 17 (Mojang)…")
-    callback = tracker.as_mll_callback("java") if tracker else None
+    callback = tracker.as_mll_callback("java", cancel_event=cancel_event) if tracker else None
     mll.runtime.install_jvm_runtime(JVM_RUNTIME, str(shared), callback=callback)
     path = java_runtime_path(shared)
     if not path:
@@ -205,7 +212,7 @@ def ensure_java(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None) 
     return path
 
 
-def ensure_forge(tracker: Optional[ProgressTracker] = None) -> str:
+def ensure_forge(tracker: Optional[ProgressTracker] = None, cancel_event=None) -> str:
     mc_path = minecraft_dir()
     mc = str(mc_path)
     mc_version, forge_install, profile = active_forge_target()
@@ -226,7 +233,7 @@ def ensure_forge(tracker: Optional[ProgressTracker] = None) -> str:
 
     if tracker:
         tracker.set_phase("forge", f"Baixando Minecraft {mc_version} + Forge {forge_install}…")
-    callback = tracker.as_mll_callback("forge") if tracker else None
+    callback = tracker.as_mll_callback("forge", cancel_event=cancel_event) if tracker else None
 
     # Clear leftover natives from a previous failed install (common WinError 183).
     clean_incomplete_forge(mc_path)
@@ -237,6 +244,8 @@ def ensure_forge(tracker: Optional[ProgressTracker] = None) -> str:
             mll.forge.install_forge_version(forge_install, mc, callback=callback)
             last_err = None
             break
+        except CancelledError:
+            raise
         except BaseException as exc:
             last_err = exc
             if attempt == 0 and _is_already_exists_error(exc):
@@ -262,7 +271,7 @@ def ensure_forge(tracker: Optional[ProgressTracker] = None) -> str:
     return profile
 
 
-def _run_forge_with_java(java_path: str, tracker: Optional[ProgressTracker] = None) -> str:
+def _run_forge_with_java(java_path: str, tracker: Optional[ProgressTracker] = None, cancel_event=None) -> str:
     """
     Install Forge while forcing JAVA_HOME/PATH so the Forge processors use our Java 17.
     """
@@ -287,7 +296,7 @@ def _run_forge_with_java(java_path: str, tracker: Optional[ProgressTracker] = No
     old_env = os.environ.copy()
     try:
         os.environ.update(env)
-        return ensure_forge(tracker=tracker)
+        return ensure_forge(tracker=tracker, cancel_event=cancel_event)
     finally:
         os.environ.clear()
         os.environ.update(old_env)
@@ -308,7 +317,7 @@ def is_game_ready(mc_dir: Optional[Path] = None) -> bool:
 
 
 def uninstall_game() -> None:
-    """Remove downloaded Minecraft/Forge/Java runtime under the active instance."""
+    """Remove every file of the active instance (Desinstalar)."""
     root = minecraft_dir()
     # Keep folder itself; wipe contents
     if not root.exists():
@@ -320,8 +329,36 @@ def uninstall_game() -> None:
             child.unlink(missing_ok=True)
 
 
+# Everything the launcher itself downloads and can rebuild. Player data
+# (saves, screenshots, mods, config, options.txt, logs…) is never touched.
+REINSTALLABLE_ENTRIES = ("versions", "libraries", "assets", "runtime", "natives", "bin")
+
+
+def clear_game_artifacts(mc_dir: Optional[Path] = None) -> list[str]:
+    """
+    Drop only the re-downloadable Minecraft/Forge artifacts of an instance.
+    Returns the names removed.
+    """
+    root = Path(mc_dir or minecraft_dir())
+    if not root.exists():
+        return []
+    removed: list[str] = []
+    for name in REINSTALLABLE_ENTRIES:
+        child = root / name
+        if child.exists() or child.is_symlink():
+            _wipe_path(child)
+            removed.append(name)
+    return removed
+
+
 def reinstall_game(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None, cancel_event=None) -> str:
-    uninstall_game()
+    """Rebuild Minecraft/Forge for the active instance, keeping player data."""
+    removed = clear_game_artifacts()
+    if tracker:
+        tracker.set_detail(
+            "Reinstalando Minecraft/Forge (mundos, mods e configs preservados)"
+            + (f" · limpo: {', '.join(removed)}" if removed else "")
+        )
     return prepare_game(cfg, tracker=tracker, cancel_event=cancel_event)
 
 
@@ -346,9 +383,9 @@ def prepare_game(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None,
             raise CancelledError("Download cancelado.")
 
     check_cancel()
-    java = ensure_java(cfg, tracker=tracker)
+    java = ensure_java(cfg, tracker=tracker, cancel_event=cancel_event)
     check_cancel()
-    installed = _run_forge_with_java(java, tracker=tracker)
+    installed = _run_forge_with_java(java, tracker=tracker, cancel_event=cancel_event)
     if tracker:
         tracker.set_detail(f"Forge pronto: {installed} (pedido {forge_install})")
     check_cancel()

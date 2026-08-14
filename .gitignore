@@ -1,14 +1,55 @@
-.venv/
-venv/
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# Testes, cobertura e ferramentas de qualidade
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Builds e pacotes gerados
 build/
 dist/
 release/
 *.spec.bak
-.pytest_cache/
-.mypy_cache/
+
+# Configuracoes, credenciais e dados locais do launcher
+.env
+.env.*
+!.env.example
 launcher_config.json
 *.log
+logs/
 mods/
+
+# Infraestrutura local de desenvolvimento (Docker/noVNC)
+.dockerignore
+Dockerfile.dev
+compose.dev.yml
+scripts/start_dev_gui.sh
+.devcontainer/
+
+# Editores e sistema operacional
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Arquivos locais de agentes e automacao da interface
+CLAUDE.md
+AGENTS.md
+.tmp/
+.playwright-mcp/

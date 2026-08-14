@@ -28,7 +28,13 @@ build_exe.bat
 
 ## Dev
 
+O ambiente de desenvolvimento fica isolado em Docker (inclusive Python, Tkinter e dependências). Na VM `dreamer`:
+
 ```bash
-pip install -r requirements.txt
-python main.py
+cd /putslauncher
+docker compose -f compose.dev.yml build
+docker compose -f compose.dev.yml run --rm gui pytest
+docker compose -f compose.dev.yml up gui
 ```
+
+A GUI fica disponível por noVNC em `http://192.168.1.21:3002/vnc.html?autoconnect=1&resize=scale`. Para usar outra porta, defina `PUTS_PORT`; para encerrar, use `Ctrl+C`. A porta só fica aberta enquanto o contêiner estiver rodando.

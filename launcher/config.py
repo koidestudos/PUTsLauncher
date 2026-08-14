@@ -157,11 +157,18 @@ class LauncherConfig:
 
 def bootstrap_instances(cfg: Optional["LauncherConfig"] = None) -> "LauncherConfig":
     """Ensure instance layout exists and activate cfg.active_instance_id."""
-    from launcher.core.instances import activate_instance, apply_instance_to_config, ensure_default_instance, list_instances
+    from launcher.core.instances import (
+        activate_instance,
+        apply_instance_to_config,
+        ensure_default_instance,
+        list_instances,
+        migrate_inherited_server,
+    )
 
     if cfg is None:
         cfg = LauncherConfig.load()
     ensure_default_instance()
+    migrate_inherited_server(cfg)
     wanted = (cfg.active_instance_id or "default").strip() or "default"
     ids = {i.id for i in list_instances()}
     if wanted not in ids:

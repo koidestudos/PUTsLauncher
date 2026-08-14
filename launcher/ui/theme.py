@@ -41,6 +41,37 @@ FONTS = {
 }
 
 
+ACCENTED_SAMPLE = "çãõéíáêóú"
+
+
+def font_covers(font_path: Path, sample: str = ACCENTED_SAMPLE) -> bool:
+    """
+    True when the TTF has a glyph for every character in ``sample``.
+
+    The brand font only carries ASCII, so titles like “Opções” would render with
+    missing glyphs — we check the cmap instead of guessing.
+    """
+    try:
+        from fontTools.ttLib import TTFont  # type: ignore
+
+        with TTFont(str(font_path), fontNumber=0, lazy=True) as tt:
+            cmap = tt.getBestCmap()
+        return all(ord(ch) in cmap for ch in sample)
+    except Exception:
+        pass
+    try:
+        from PIL import ImageFont
+
+        pil = ImageFont.truetype(str(font_path), 24)
+        notdef = pil.getmask("￾").getbbox()
+        for ch in sample:
+            if pil.getmask(ch).getbbox() == notdef:
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def register_fonts(root=None) -> str:
     """Register Merchant Copy Doublesize for brand titles. Returns family name used."""
     global FONTS
@@ -73,6 +104,12 @@ def register_fonts(root=None) -> str:
         except Exception:
             family = "Georgia"
 
+    # "PUTs" is ASCII, so the brand font is always safe for the wordmark.
     FONTS["display"] = (family, 48, "bold")
-    FONTS["title"] = (family, 24, "bold")
+    # Titles carry Portuguese text ("Opções", "Instância"): only use the brand
+    # font when it actually has those glyphs, otherwise stay on Georgia.
+    if family != "Georgia" and font_covers(font_path):
+        FONTS["title"] = (family, 24, "bold")
+    else:
+        FONTS["title"] = ("Georgia", 22, "bold")
     return family
