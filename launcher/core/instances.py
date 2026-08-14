@@ -27,6 +27,22 @@ def instances_root() -> Path:
     return path
 
 
+def instance_path(instance_id: str) -> Path:
+    """
+    Folder of ``instance_id`` inside instances_root(), refusing anything that
+    escapes it (``..``, absolute paths, separators) — ids come from catalogs
+    and from launcher_config.json, both editable outside the launcher.
+    """
+    iid = (instance_id or "").strip()
+    if not iid or iid in {".", ".."} or "/" in iid or "\\" in iid:
+        raise ValueError(f"Id de instância inválido: {instance_id!r}")
+    root = instances_root().resolve()
+    path = (root / iid).resolve()
+    if path.parent != root:
+        raise ValueError(f"Id de instância inválido: {instance_id!r}")
+    return path
+
+
 @dataclass
 class GameInstance:
     id: str
@@ -44,7 +60,7 @@ class GameInstance:
 
     @property
     def root(self) -> Path:
-        return instances_root() / self.id
+        return instance_path(self.id)
 
     @property
     def minecraft_path(self) -> Path:
@@ -63,13 +79,20 @@ class GameInstance:
 
     @classmethod
     def load(cls, instance_id: str) -> Optional["GameInstance"]:
-        meta = instances_root() / instance_id / "instance.json"
+        try:
+            meta = instance_path(instance_id) / "instance.json"
+        except ValueError:
+            return None
         if not meta.exists():
             return None
         try:
             data = json.loads(meta.read_text(encoding="utf-8"))
             known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
-            return cls(**{k: v for k, v in data.items() if k in known})
+            fields = {k: v for k, v in data.items() if k in known}
+            # The folder is the source of truth: a stale/edited "id" must not
+            # point the instance at another folder.
+            fields["id"] = meta.parent.name
+            return cls(**fields)
         except Exception:
             return None
 
@@ -173,10 +196,10 @@ def create_instance(
 ) -> GameInstance:
     from datetime import datetime, timezone
 
-    iid = instance_id or _slug(name)
+    iid = _slug(instance_id) if instance_id else _slug(name)
     base = iid
     n = 2
-    while (instances_root() / iid).exists():
+    while instance_path(iid).exists():
         iid = f"{base}-{n}"
         n += 1
 
@@ -213,7 +236,10 @@ def _forge_profile(mc_version: str, forge_version: str) -> str:
 
 
 def delete_instance(instance_id: str) -> None:
-    path = instances_root() / instance_id
+    try:
+        path = instance_path(instance_id)
+    except ValueError:
+        return
     others = [p.name for p in instances_root().iterdir() if p.is_dir() and p.name != instance_id]
     if path.exists():
         shutil.rmtree(path, ignore_errors=True)
@@ -225,15 +251,72 @@ def delete_instance(instance_id: str) -> None:
             activate_instance("default")
 
 
+def effective_server(cfg: LauncherConfig, inst: Optional[GameInstance]) -> tuple[str, int]:
+    """
+    Server the game should auto-join: the instance's own address when the pack
+    defines one, otherwise the user's global address from Opções.
+    """
+    if inst is not None and (inst.server_ip or "").strip():
+        return inst.server_ip.strip(), int(inst.server_port or 25565)
+    return (cfg.server_ip or "").strip(), int(cfg.server_port or 25565)
+
+
+SERVER_MIGRATION_KEY = "pack_server_migrated"
+SERVER_BACKUP_KEY = "server_removed_by_migration"
+
+
+def migrate_inherited_server(cfg: LauncherConfig) -> bool:
+    """
+    One-shot cleanup for configs written by older builds.
+
+    cfg.server_ip is the *global* address typed by the user in Opções; pack
+    addresses belong to the instance. Older builds copied the pack address into
+    launcher_config.json, so an instance without a server kept auto-joining the
+    previous pack's server. Only an exact host+port match with a known instance
+    is treated as that leftover copy, and only once — after the marker is set the
+    global address is never touched again.
+    """
+    if cfg.extra.get(SERVER_MIGRATION_KEY):
+        return False
+    cfg.extra[SERVER_MIGRATION_KEY] = True
+    current = (cfg.server_ip or "").strip()
+    if not current:
+        return True
+    port = int(cfg.server_port or 25565)
+    copied = any(
+        (i.server_ip or "").strip() == current and int(i.server_port or 25565) == port
+        for i in list_instances()
+    )
+    if copied:
+        # Keep the old value so nothing is lost silently: the UI offers it back
+        # in case the user had typed that address on purpose.
+        cfg.extra[SERVER_BACKUP_KEY] = {"ip": current, "port": port}
+        cfg.server_ip = ""
+        cfg.server_port = 25565
+    return True
+
+
+def migration_server_backup(cfg: LauncherConfig) -> Optional[tuple[str, int]]:
+    """Address the one-shot migration removed from the global config, if any."""
+    data = cfg.extra.get(SERVER_BACKUP_KEY)
+    if not isinstance(data, dict) or not (data.get("ip") or "").strip():
+        return None
+    try:
+        return str(data["ip"]).strip(), int(data.get("port") or 25565)
+    except (TypeError, ValueError):
+        return None
+
+
+def clear_migration_server_backup(cfg: LauncherConfig) -> None:
+    cfg.extra.pop(SERVER_BACKUP_KEY, None)
+
+
 def apply_instance_to_config(cfg: LauncherConfig, inst: GameInstance) -> None:
-    """Persist active instance + optional server override from pack."""
+    """Persist active instance; pack servers stay on the instance, never in cfg."""
     cfg.active_instance_id = inst.id
     # Keep a mirror list for UI without scanning disk only
     entries = []
     for i in list_instances():
         entries.append({"id": i.id, "name": i.name, "modpack_id": i.modpack_id, "modpack_version": i.modpack_version})
     cfg.instances = entries
-    if inst.server_ip:
-        cfg.server_ip = inst.server_ip
-        cfg.server_port = int(inst.server_port or 25565)
     cfg.save()

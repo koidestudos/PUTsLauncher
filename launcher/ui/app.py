@@ -25,6 +25,8 @@ from launcher.auth.skin import (
     cache_local_skin,
     fetch_head_avatar,
     fetch_skin_texture,
+    load_local_skin,
+    purge_legacy_skin_files,
     upload_skin,
 )
 from launcher.config import (
@@ -43,6 +45,7 @@ from launcher.core import (
     activate_instance,
     fetch_modpack_index,
     install_modpack,
+    installed_instance_for,
     is_game_ready,
     list_instance_mods,
     list_instances,
@@ -51,8 +54,10 @@ from launcher.core import (
     reinstall_game,
     sync_mods,
     uninstall_game,
+    verify_modpack_files,
 )
 from launcher.core.instances import apply_instance_to_config, delete_instance
+from launcher.core.system import MIN_RAM_GB, clamp_ram_gb, max_ram_gb, total_ram_gb
 from launcher.ui.skin3d import Skin3DViewer
 from launcher.ui.theme import COLORS, FONTS, register_fonts
 
@@ -65,10 +70,44 @@ def _load_ctk_image(path: Path, size: tuple[int, int]) -> Optional[ctk.CTkImage]
     if not path.exists():
         return None
     try:
-        img = Image.open(path).convert("RGBA")
-        return ctk.CTkImage(light_image=img, dark_image=img, size=size)
+        return _ctk_image(Image.open(path).convert("RGBA"), size)
     except Exception:
         return None
+
+
+def _ctk_image(image: Image.Image, size: tuple[int, int]) -> Optional[ctk.CTkImage]:
+    try:
+        return ctk.CTkImage(light_image=image, dark_image=image, size=size)
+    except Exception:
+        return None
+
+
+def _fit_window(win, min_w: int, min_h: int, pad: int = 60) -> None:
+    """
+    Size a popup to its own content and keep it on screen, centred on the app.
+    Fixed geometries clipped titles and buttons on smaller screens / bigger fonts.
+    """
+    try:
+        win.update_idletasks()
+        screen_w = win.winfo_screenwidth()
+        screen_h = win.winfo_screenheight()
+        width = max(min_w, win.winfo_reqwidth())
+        height = max(min_h, win.winfo_reqheight())
+        width = min(width, screen_w - 40)
+        height = min(height, screen_h - pad)
+        parent = win.master
+        try:
+            px, py = parent.winfo_rootx(), parent.winfo_rooty()
+            pw, ph = parent.winfo_width(), parent.winfo_height()
+        except Exception:
+            px = py = 0
+            pw, ph = screen_w, screen_h
+        x = max(0, min(px + (pw - width) // 2, screen_w - width))
+        y = max(0, min(py + (ph - height) // 2, screen_h - height))
+        win.geometry(f"{width}x{height}+{x}+{y}")
+        win.minsize(min(min_w, width), min(min_h, height))
+    except Exception:
+        pass
 
 
 def _make_glow_backdrop(width: int, height: int) -> Image.Image:
@@ -112,6 +151,7 @@ class PUTsLauncherApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.cfg = bootstrap_instances(LauncherConfig.load())
+        purge_legacy_skin_files()  # skins agora vivem só na RAM
         self.title(f"{__app_name__}")
         self.geometry("1020x680")
         self.minsize(940, 620)
@@ -119,6 +159,8 @@ class PUTsLauncherApp(ctk.CTk):
         register_fonts(self)
         self._accounts_open = False
         self._skin_loading = False
+        self._skin_request = 0
+        self._head_request = 0
         self._options_win = None
         self._variant_card = None
         self._busy = False
@@ -625,20 +667,22 @@ class PUTsLauncherApp(ctk.CTk):
         self.cfg.auth_mode = self.auth_mode.get()
         self.cfg.username = self.nick_entry.get().strip() or "Steve"
         if getattr(self, "ram_slider", None) is not None:
-            self.cfg.ram_gb = int(round(self.ram_slider.get()))
+            self.cfg.ram_gb = clamp_ram_gb(round(self.ram_slider.get()))
         self.cfg.save()
 
     def _run_bg(self, fn, on_done=None, busy_text: str = "…") -> None:
+        # Claim the slot synchronously: two fast clicks must not both start.
         if self._busy:
             return
+        self._busy = True
 
         def worker():
-            self._busy = True
             def mark_busy():
                 if busy_text is None:
                     self.action_btn.configure(state="disabled")
                 else:
                     self.action_btn.configure(state="disabled", text=busy_text)
+                self.menu_btn.configure(state="disabled")
             self.after(0, mark_busy)
             err = None
             result = None
@@ -652,6 +696,7 @@ class PUTsLauncherApp(ctk.CTk):
 
                 def finish():
                     self.action_btn.configure(state="normal")
+                    self.menu_btn.configure(state="normal")
                     self._refresh_ready_state()
                     if on_done:
                         on_done(result, err)
@@ -701,6 +746,11 @@ class PUTsLauncherApp(ctk.CTk):
         iid = getattr(self, "_instance_by_label", {}).get(label)
         if not iid:
             return
+        if self._busy:
+            # Switching mid-install would point the installer at another folder.
+            messagebox.showinfo("Instância", "Espere a tarefa atual terminar para trocar de instância.")
+            self._refresh_instance_menu()
+            return
         inst = activate_instance(iid)
         apply_instance_to_config(self.cfg, inst)
         self.cfg = LauncherConfig.load()
@@ -711,6 +761,9 @@ class PUTsLauncherApp(ctk.CTk):
     def _delete_active_instance(self) -> None:
         from launcher.core.instances import get_active_id, list_instances
 
+        if self._busy:
+            messagebox.showinfo("Instância", "Espere a tarefa atual terminar para remover a instância.")
+            return
         iid = get_active_id()
         if len(list_instances()) <= 1:
             messagebox.showinfo(
@@ -727,6 +780,9 @@ class PUTsLauncherApp(ctk.CTk):
         self._refresh_ready_state()
 
     def _open_modpack_catalog(self) -> None:
+        if self._busy:
+            messagebox.showinfo("Modpacks", "Espere a tarefa atual terminar antes de abrir o catálogo.")
+            return
         url = self.cfg.catalog_source()
         if not url:
             messagebox.showinfo(
@@ -741,6 +797,7 @@ class PUTsLauncherApp(ctk.CTk):
         win = ctk.CTkToplevel(self)
         win.title("Modpacks (GitHub Releases)")
         win.geometry("520x560")
+        win.minsize(460, 420)
         win.configure(fg_color=COLORS["bg1"])
         win.transient(self)
 
@@ -787,20 +844,75 @@ class PUTsLauncherApp(ctk.CTk):
                         justify="left",
                     ).pack(fill="x", padx=14, pady=(4, 0))
 
-                def make_install(p=pack):
-                    return lambda: self._install_catalog_pack(p, win)
+                installed = installed_instance_for(pack, url)
+                same_version = installed is not None and (
+                    (installed.modpack_version or "") == (pack.version or "")
+                )
+                if installed is not None:
+                    ctk.CTkLabel(
+                        card,
+                        text=(
+                            f"Instalado como “{installed.name}”"
+                            + (
+                                "  ·  atualizado"
+                                if same_version
+                                else f"  ·  você tem a v{installed.modpack_version or '?'}"
+                            )
+                        ),
+                        font=FONTS["tiny"],
+                        text_color=COLORS["ok"] if same_version else COLORS["accent_hot"],
+                        anchor="w",
+                    ).pack(fill="x", padx=14, pady=(6, 0))
+
+                def make_action(p=pack, inst=installed, same=same_version):
+                    def run():
+                        if inst is None:
+                            self._install_catalog_pack(p, win, origin=url)
+                        elif same:
+                            self._verify_catalog_pack(p, inst, win)
+                        else:
+                            self._install_catalog_pack(p, win, existing=inst, origin=url)
+
+                    return run
+
+                if installed is None:
+                    action_text = "Instalar instância"
+                elif same_version:
+                    action_text = "Verificar arquivos"
+                else:
+                    action_text = f"Atualizar para v{pack.version}"
 
                 ctk.CTkButton(
                     card,
-                    text="Instalar instância",
+                    text=action_text,
                     height=36,
                     corner_radius=10,
                     font=FONTS["body_bold"],
                     fg_color=COLORS["accent"],
                     hover_color=COLORS["accent_hot"],
                     text_color=COLORS["accent_text"],
-                    command=make_install(),
-                ).pack(fill="x", padx=14, pady=(10, 12))
+                    command=make_action(),
+                ).pack(fill="x", padx=14, pady=(10, 6 if installed is not None else 12))
+
+                if installed is not None:
+                    def make_reinstall(p=pack, inst=installed):
+                        return lambda: self._install_catalog_pack(p, win, existing=inst, origin=url)
+
+                    ctk.CTkButton(
+                        card,
+                        text="Reinstalar do zero",
+                        height=30,
+                        corner_radius=10,
+                        font=FONTS["small"],
+                        fg_color="transparent",
+                        hover_color=COLORS["stroke"],
+                        text_color=COLORS["muted"],
+                        border_width=1,
+                        border_color=COLORS["stroke"],
+                        command=make_reinstall(),
+                    ).pack(fill="x", padx=14, pady=(0, 12))
+
+            _fit_window(win, 520, 560, pad=120)
 
         def job():
             return fetch_modpack_index(url)
@@ -810,13 +922,23 @@ class PUTsLauncherApp(ctk.CTk):
 
         self._run_bg(job, done, busy_text=None)
 
-    def _install_catalog_pack(self, pack, catalog_win=None) -> None:
+    def _install_catalog_pack(self, pack, catalog_win=None, existing=None, origin: str = "") -> None:
+        if existing is not None:
+            if not messagebox.askyesno(
+                "Reinstalar modpack",
+                f"“{existing.name}” já está instalada com a v{existing.modpack_version or '?'}.\n\n"
+                f"Reinstalar troca os arquivos do pack pela v{pack.version}. "
+                "Mundos e screenshots ficam, mas mods e configurações do pack voltam ao original.\n\n"
+                "Quer continuar?",
+            ):
+                return
         if catalog_win is not None:
             try:
                 catalog_win.destroy()
             except Exception:
                 pass
 
+        self._cancel.clear()
         self._show_progress(True)
         self.progress_title.configure(text="Modpack")
         self.detail_label.configure(text=f"Instalando {pack.name}…")
@@ -824,17 +946,24 @@ class PUTsLauncherApp(ctk.CTk):
         def job():
             tracker = ProgressTracker({"mods": 0.55, "java": 0.2, "forge": 0.25})
             tracker.on_update = lambda s: self.after(0, lambda: self._set_progress_ui(s))
-            inst = install_modpack(pack, tracker=tracker)
+            inst = install_modpack(
+                pack, tracker=tracker, cancel_event=self._cancel, catalog_origin=origin
+            )
             activate_instance(inst.id)
             apply_instance_to_config(self.cfg, inst)
             # Install Java/Forge into the new instance game dir
             self.cfg = LauncherConfig.load()
-            prepare_game(self.cfg, tracker=tracker)
+            prepare_game(self.cfg, tracker=tracker, cancel_event=self._cancel)
             sync_mods(tracker=tracker)
             return inst
 
         def done(inst, err):
             self._show_progress(False)
+            if isinstance(err, CancelledError) or self._cancel.is_set():
+                self.detail_label.configure(text="Instalação cancelada.")
+                self._refresh_instance_menu()
+                self._refresh_ready_state()
+                return
             if err:
                 messagebox.showerror("Modpack", str(err))
                 return
@@ -844,6 +973,50 @@ class PUTsLauncherApp(ctk.CTk):
             messagebox.showinfo("Modpack", f"Instância pronta: {inst.name}")
 
         self._run_bg(job, done, busy_text="PACK…")
+
+    def _verify_catalog_pack(self, pack, instance, catalog_win=None) -> None:
+        """Steam-style integrity check: compare hashes and put back what is off."""
+        if catalog_win is not None:
+            try:
+                catalog_win.destroy()
+            except Exception:
+                pass
+
+        self._cancel.clear()
+        self._show_progress(True)
+        self.progress_title.configure(text="Verificando")
+        self.detail_label.configure(text=f"Conferindo arquivos de {pack.name}…")
+
+        def job():
+            tracker = ProgressTracker({"mods": 1.0})
+            tracker.on_update = lambda s: self.after(0, lambda: self._set_progress_ui(s))
+            return verify_modpack_files(pack, instance, tracker=tracker, cancel_event=self._cancel)
+
+        def done(report, err):
+            self._show_progress(False)
+            if isinstance(err, CancelledError) or self._cancel.is_set():
+                self.detail_label.configure(text="Verificação cancelada.")
+                return
+            if err:
+                messagebox.showerror("Verificar arquivos", str(err))
+                return
+            if report["ok"]:
+                messagebox.showinfo(
+                    "Verificar arquivos",
+                    f"{report['checked']} arquivo(s) do pack conferidos — está tudo no lugar.",
+                )
+            else:
+                faltando = len(report["missing"])
+                trocados = len(report["changed"])
+                messagebox.showinfo(
+                    "Verificar arquivos",
+                    f"{report['checked']} arquivo(s) conferidos.\n"
+                    f"{faltando} faltando, {trocados} diferentes — "
+                    f"{len(report['repaired'])} restaurado(s) do pack.",
+                )
+            self._refresh_ready_state()
+
+        self._run_bg(job, done, busy_text="CONFERINDO…")
 
     # ------------------------------------------------------------------ profile / accounts
     def _refresh_ms_profile(self) -> None:
@@ -860,16 +1033,26 @@ class PUTsLauncherApp(ctk.CTk):
             self.btn_ms_login.grid()
             self.btn_change_skin.configure(state="disabled")
 
-    def _load_head(self) -> None:
+    def _load_head(self, bust: bool = False) -> None:
+        uuid = self.cfg.microsoft_uuid
+        name = self.cfg.microsoft_name
+        self._head_request += 1
+        request = self._head_request
+
         def worker():
-            path = fetch_head_avatar(uuid=self.cfg.microsoft_uuid, name=self.cfg.microsoft_name, size=64)
-            if not path:
+            head = fetch_head_avatar(uuid=uuid, name=name, size=64, bust=bust)
+            if head is None:
                 return
-            img = _load_ctk_image(Path(path), (32, 32))
+            img = _ctk_image(head, (32, 32))
             if img:
                 def apply():
+                    # Account may have changed, or a newer request already won.
+                    if request != self._head_request:
+                        return
+                    if (self.cfg.microsoft_uuid, self.cfg.microsoft_name) != (uuid, name):
+                        return
                     self._head_image = img
-                    self.profile_btn.configure(image=img, text=f"  {self.cfg.microsoft_name}   ▾")
+                    self.profile_btn.configure(image=img, text=f"  {name}   ▾")
 
                 self.after(0, apply)
 
@@ -976,19 +1159,36 @@ class PUTsLauncherApp(ctk.CTk):
             self._set_mode("offline")
 
     # ------------------------------------------------------------------ skin
+    def _skin_identity(self) -> tuple[str, str]:
+        """(uuid, nick) the preview should be showing right now."""
+        if self.auth_mode.get() == "microsoft" and self.cfg.microsoft_name:
+            return self.cfg.microsoft_uuid, self.cfg.microsoft_name
+        return "", (self.nick_entry.get().strip() or "Steve")
+
     def _refresh_skin(self, bust: bool = False) -> None:
+        self._skin_request += 1
+        request = self._skin_request
+        uuid, name = self._skin_identity()
+
         def worker():
-            uuid = ""
-            name = ""
-            if self.auth_mode.get() == "microsoft" and self.cfg.microsoft_name:
-                uuid = self.cfg.microsoft_uuid
-                name = self.cfg.microsoft_name
-            else:
-                name = self.nick_entry.get().strip() or "Steve"
-            path = fetch_skin_texture(uuid=uuid, name=name, bust=bust)
-            self.after(0, lambda: self.skin_viewer.set_texture(path))
+            texture = fetch_skin_texture(uuid=uuid, name=name, bust=bust)
+
+            def apply():
+                # A slower earlier request must not repaint over a newer nick/account.
+                if request != self._skin_request:
+                    return
+                self._apply_skin_texture(texture)
+
+            self.after(0, apply)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_skin_texture(self, texture, slim: Optional[bool] = None) -> None:
+        """Show a texture that lives in memory (nothing is written to disk)."""
+        if texture is None:
+            self.skin_viewer.set_texture(None)
+            return
+        self.skin_viewer.set_texture_image(texture, slim=slim)
 
     def _change_skin(self) -> None:
         if not self._ms_logged_in():
@@ -1000,13 +1200,18 @@ class PUTsLauncherApp(ctk.CTk):
         )
         if not path:
             return
-        self._show_skin_variant_picker(Path(path))
+        try:
+            texture = load_local_skin(Path(path))
+        except Exception as exc:
+            messagebox.showerror("Mudar skin", f"{exc}")
+            return
+        self._show_skin_variant_picker(Path(path), texture)
 
-    def _show_skin_variant_picker(self, local: Path) -> None:
+    def _show_skin_variant_picker(self, local: Path, texture=None) -> None:
         """Animated Classic/Slim card inside the skin panel (semi-transparent backdrop)."""
         self._close_variant_picker()
         try:
-            self.skin_viewer.set_texture(local, slim=False)
+            self._apply_skin_texture(texture if texture is not None else load_local_skin(local), slim=False)
         except Exception:
             pass
 
@@ -1149,6 +1354,10 @@ class PUTsLauncherApp(ctk.CTk):
 
     def _upload_skin_file(self, local: Path, variant: str) -> None:
         self._set_skin_loading(True)
+        # Any refresh started before the upload is stale from here on.
+        self._skin_request += 1
+        request = self._skin_request
+        identity = (self.cfg.microsoft_uuid, self.cfg.microsoft_name)
 
         def job():
             token = self.cfg.microsoft_access_token
@@ -1169,17 +1378,19 @@ class PUTsLauncherApp(ctk.CTk):
 
             bust_skin_caches(self.cfg.microsoft_uuid, self.cfg.microsoft_name)
             cached = cache_local_skin(local, uuid=self.cfg.microsoft_uuid, name=self.cfg.microsoft_name)
-            return str(cached), variant
+            return cached, variant
 
         def done(result, err):
             self._set_skin_loading(False)
-            cached_path = None
+            if request != self._skin_request or (self.cfg.microsoft_uuid, self.cfg.microsoft_name) != identity:
+                return  # conta trocou durante o upload — não pinta a skin errada
+            cached_texture = None
             variant_used = variant
             if result and isinstance(result, tuple):
-                cached_path, variant_used = result
+                cached_texture, variant_used = result
             if err:
                 try:
-                    self.skin_viewer.set_texture(local, slim=variant_used == "slim")
+                    self._apply_skin_texture(load_local_skin(local), slim=variant_used == "slim")
                 except Exception:
                     pass
                 messagebox.showwarning(
@@ -1188,13 +1399,36 @@ class PUTsLauncherApp(ctk.CTk):
                     "o preview do launcher já tentou atualizar com o arquivo local.",
                 )
                 return
-            if cached_path:
-                self.skin_viewer.set_texture(Path(cached_path), slim=variant_used == "slim")
+            if cached_texture is not None:
+                self._skin_request += 1  # a textura recém-enviada é a atual
+                self._apply_skin_texture(cached_texture, slim=variant_used == "slim")
             else:
                 self._refresh_skin(bust=True)
-            self._load_head()
+            self._load_head(bust=True)
 
         self._run_bg(job, done, busy_text=None)
+
+    def _server_hint(self) -> str:
+        """Explain which address the game will actually join."""
+        try:
+            from launcher.core.instances import GameInstance, get_active_id, migration_server_backup
+
+            inst = GameInstance.load(get_active_id())
+            backup = migration_server_backup(self.cfg)
+        except Exception:
+            inst = None
+            backup = None
+        if backup:
+            return (
+                f"Removemos {backup[0]}:{backup[1]} daqui — esse endereço vinha do modpack e agora "
+                "fica só na instância. Se você tinha digitado ele de propósito, é só escrever de novo."
+            )
+        if inst is not None and (inst.server_ip or "").strip():
+            return (
+                f"“{inst.name}” já entra em {inst.server_ip}:{inst.server_port or 25565} "
+                "(definido pelo modpack). Este endereço só vale para instâncias sem servidor próprio."
+            )
+        return "Usado pelas instâncias que não trazem servidor próprio. Deixe vazio para abrir no menu do jogo."
 
     def _open_options(self) -> None:
         if self._options_win and self._options_win.winfo_exists():
@@ -1205,6 +1439,7 @@ class PUTsLauncherApp(ctk.CTk):
         self._options_win = win
         win.title("Opções")
         win.geometry("460x620")
+        win.minsize(420, 420)
         win.configure(fg_color=COLORS["bg1"])
         win.transient(self)
         try:
@@ -1223,32 +1458,47 @@ class PUTsLauncherApp(ctk.CTk):
             text_color=COLORS["muted"],
         ).pack(anchor="w", pady=(4, 16))
 
-        # RAM
+        # RAM — never offer more than the machine actually has
+        ram_max = max_ram_gb()
+        ram_now = clamp_ram_gb(self.cfg.ram_gb or 4)
         ctk.CTkLabel(scroll, text="Memória RAM", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(anchor="w")
         ram_row = ctk.CTkFrame(scroll, fg_color="transparent")
-        ram_row.pack(fill="x", pady=(6, 14))
+        ram_row.pack(fill="x", pady=(6, 4))
         ram_row.grid_columnconfigure(0, weight=1)
         self.ram_slider = ctk.CTkSlider(
             ram_row,
-            from_=2,
-            to=16,
-            number_of_steps=14,
+            from_=MIN_RAM_GB,
+            to=ram_max,
+            number_of_steps=max(1, ram_max - MIN_RAM_GB),
             command=self._on_ram,
             progress_color=COLORS["accent"],
             button_color=COLORS["accent_hot"],
             button_hover_color=COLORS["accent"],
             fg_color=COLORS["panel"],
         )
-        self.ram_slider.set(float(self.cfg.ram_gb or 4))
+        self.ram_slider.set(float(ram_now))
         self.ram_slider.grid(row=0, column=0, sticky="ew")
         self.ram_value = ctk.CTkLabel(
             ram_row,
-            text=f"{int(self.cfg.ram_gb or 4)} GB",
+            text=f"{ram_now} GB",
             width=58,
             font=FONTS["body_bold"],
             text_color=COLORS["accent"],
         )
         self.ram_value.grid(row=0, column=1, padx=(12, 0))
+        total = total_ram_gb()
+        ctk.CTkLabel(
+            scroll,
+            text=(
+                f"Máximo {ram_max} GB — a RAM total deste PC."
+                if total
+                else f"Máximo {ram_max} GB (não deu pra ler a RAM total deste PC)."
+            ),
+            font=FONTS["tiny"],
+            text_color=COLORS["muted"],
+            wraplength=380,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 14))
 
         def switch(label, attr, tip):
             row = ctk.CTkFrame(scroll, fg_color=COLORS["panel"], corner_radius=12)
@@ -1309,7 +1559,7 @@ class PUTsLauncherApp(ctk.CTk):
         switch("Reservar metade da RAM no início", "allocate_min_half_ram", "Xms = metade do Xmx — evita hiccups ao crescer o heap.")
         switch("Tentar Vulkan (LWJGL)", "use_vulkan", "Pede Vulkan ao LWJGL. Ajuda com Sodium/Iris em PCs com driver bom.")
         switch("Tela cheia", "fullscreen", "Inicia em fullscreen quando o jogo suportar.")
-        switch("Desativar dica de VSync nativo", "disable_vsync", "Útil se você limita FPS pelo mod/driver.")
+        switch("Desativar VSync", "disable_vsync", "Escreve enableVsync no options.txt — útil se você limita FPS pelo mod/driver.")
         switch(
             "Deduplicar strings (JVM)",
             "use_string_dedup",
@@ -1331,6 +1581,14 @@ class PUTsLauncherApp(ctk.CTk):
             srv_row, textvariable=port_var, width=80, placeholder_text="25565",
             fg_color=COLORS["input_bg"], border_color=COLORS["input_border"],
         ).pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(
+            scroll,
+            text=self._server_hint(),
+            font=FONTS["tiny"],
+            text_color=COLORS["muted"],
+            wraplength=380,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 0))
 
         ctk.CTkLabel(scroll, text="Resolução da janela", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(
             anchor="w", pady=(12, 4)
@@ -1393,11 +1651,15 @@ class PUTsLauncherApp(ctk.CTk):
                 self.cfg.server_port = int(port_var.get() or 25565)
             except Exception:
                 self.cfg.server_port = 25565
+            # Notice was shown in this window; the choice made here is final.
+            from launcher.core.instances import clear_migration_server_backup
+
+            clear_migration_server_backup(self.cfg)
             self.cfg.extra_jvm_args = jvm_box.get().strip()
             self.cfg.modpack_catalog = idx_var.get().strip()
             self.cfg.modpack_index_url = ""  # legacy cleared after migrate
             if getattr(self, "ram_slider", None) is not None:
-                self.cfg.ram_gb = int(round(self.ram_slider.get()))
+                self.cfg.ram_gb = clamp_ram_gb(round(self.ram_slider.get()))
             self.cfg.save()
             win.destroy()
             self._options_win = None
@@ -1415,20 +1677,28 @@ class PUTsLauncherApp(ctk.CTk):
         ).pack(fill="x", pady=(20, 8))
 
         win.protocol("WM_DELETE_WINDOW", save_and_close)
+        _fit_window(win, 460, 620, pad=120)
 
     # ------------------------------------------------------------------ auth
     def _show_device_code(self, user_code: str, verify_uri: str) -> None:
         def open_dialog():
             win = ctk.CTkToplevel(self)
             win.title("Login Microsoft")
-            win.geometry("480x280")
+            win.geometry("520x320")
+            win.minsize(460, 300)
             win.configure(fg_color=COLORS["bg1"])
             win.transient(self)
             frame = ctk.CTkFrame(win, fg_color="transparent")
             frame.pack(fill="both", expand=True, padx=24, pady=24)
-            ctk.CTkLabel(frame, text="Entre com sua conta Microsoft", font=FONTS["title"], text_color=COLORS["accent"]).pack(
-                anchor="w"
-            )
+            ctk.CTkLabel(
+                frame,
+                text="Entre com sua conta Microsoft",
+                font=FONTS["title"],
+                text_color=COLORS["accent"],
+                anchor="w",
+                justify="left",
+                wraplength=440,
+            ).pack(fill="x")
             ctk.CTkLabel(
                 frame,
                 text=f"1. Abra {verify_uri}\n2. Digite o código abaixo\n3. Autorize e volte aqui",
@@ -1436,6 +1706,7 @@ class PUTsLauncherApp(ctk.CTk):
                 text_color=COLORS["muted"],
                 justify="left",
                 anchor="w",
+                wraplength=440,
             ).pack(fill="x", pady=(10, 16))
             ctk.CTkLabel(frame, text=user_code, font=("Consolas", 36, "bold"), text_color=COLORS["accent"]).pack()
             ctk.CTkButton(
@@ -1447,6 +1718,7 @@ class PUTsLauncherApp(ctk.CTk):
                 text_color=COLORS["accent_text"],
                 height=40,
             ).pack(fill="x", pady=(20, 0))
+            _fit_window(win, 520, 320)
             self._device_code_window = win
 
         self.after(0, open_dialog)
@@ -1553,6 +1825,9 @@ class PUTsLauncherApp(ctk.CTk):
         self.detail_label.configure(text="Cancelando…")
 
     def _download(self, force_reinstall: bool = False) -> None:
+        if self._busy:
+            messagebox.showinfo("Baixar", "Já tem uma tarefa em andamento.")
+            return
         self._save_form()
         self._cancel.clear()
         self._downloading = True
@@ -1604,6 +1879,9 @@ class PUTsLauncherApp(ctk.CTk):
         self._run_bg(job, done, busy_text="BAIXANDO…")
 
     def _play(self) -> None:
+        if self._busy:
+            messagebox.showinfo("Jogar", "Já tem uma tarefa em andamento.")
+            return
         self._save_form()
         self._cancel.clear()
         self._show_progress(True)
@@ -1619,6 +1897,12 @@ class PUTsLauncherApp(ctk.CTk):
 
         def done(proc, err):
             if isinstance(err, CancelledError) or self._cancel.is_set():
+                if proc is not None and proc.poll() is None:
+                    # Nasceu entre o clique em CANCELAR e este callback.
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
                 self._show_progress(False)
                 return
             if err:
@@ -1638,7 +1922,11 @@ class PUTsLauncherApp(ctk.CTk):
         if self._menu_popup:
             self._menu_popup.destroy()
             self._menu_popup = None
-        if not messagebox.askyesno("Reinstalar", "Apagar e baixar de novo Java/Minecraft/Forge?"):
+        if not messagebox.askyesno(
+            "Reinstalar",
+            "Baixar de novo Minecraft/Forge desta instância?\n\n"
+            "Mundos, mods, configurações e screenshots são preservados.",
+        ):
             return
         self._download(force_reinstall=True)
 
@@ -1653,6 +1941,10 @@ class PUTsLauncherApp(ctk.CTk):
             "Desinstalar",
             f"Apagar os arquivos da instância ativa?\n{mc}",
         ):
+            return
+
+        if self._busy:
+            messagebox.showinfo("Desinstalar", "Já tem uma tarefa em andamento.")
             return
 
         def job():

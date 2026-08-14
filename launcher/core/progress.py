@@ -128,19 +128,33 @@ class ProgressTracker:
         if self.on_update:
             self.on_update(state)
 
-    def as_mll_callback(self, phase: str):
+    def as_mll_callback(self, phase: str, cancel_event=None):
+        """
+        Callback for minecraft-launcher-lib. When ``cancel_event`` is given it is
+        checked on every progress tick, so CANCELAR stops a Java/Forge download
+        in the middle instead of only between steps.
+        """
         max_val = {"v": 0}
 
+        def check_cancel() -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                from launcher.core.installer import CancelledError
+
+                raise CancelledError("Cancelado.")
+
         def set_status(status: str) -> None:
+            check_cancel()
             if self._phase != phase:
                 self.set_phase(phase, status)
             else:
                 self.set_detail(status)
 
         def set_progress(value: int) -> None:
+            check_cancel()
             self.set_counts(int(value), max(max_val["v"], 1))
 
         def set_max(value: int) -> None:
+            check_cancel()
             max_val["v"] = max(0, int(value))
             self.set_counts(self._current, max_val["v"])
 

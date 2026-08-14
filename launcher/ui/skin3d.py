@@ -13,13 +13,40 @@ _CENTER_Y = 16.0
 _CAM_DIST = 48.0
 
 
+# Legacy 64x32 skins only carry one arm and one leg; the 1.8 layout expects the
+# left limbs too. Same table the vanilla converter uses: (src x, y, w, h, dst x, y),
+# each region mirrored horizontally.
+_LEGACY_LIMB_COPIES = (
+    (4, 16, 4, 4, 20, 48),    # topo da perna
+    (8, 16, 4, 4, 24, 48),    # base da perna
+    (0, 20, 4, 12, 24, 52),   # perna, lado externo
+    (4, 20, 4, 12, 20, 52),   # perna, frente
+    (8, 20, 4, 12, 16, 52),   # perna, lado interno
+    (12, 20, 4, 12, 28, 52),  # perna, costas
+    (44, 16, 4, 4, 36, 48),   # topo do braço
+    (48, 16, 4, 4, 40, 48),   # base do braço
+    (40, 20, 4, 12, 40, 52),  # braço, lado externo
+    (44, 20, 4, 12, 36, 52),  # braço, frente
+    (48, 20, 4, 12, 32, 52),  # braço, lado interno
+    (52, 20, 4, 12, 44, 52),  # braço, costas
+)
+
+
+def _expand_legacy_skin(tex: Image.Image) -> Image.Image:
+    """64x32 → 64x64, mirroring the shared arm/leg into the left-limb slots."""
+    out = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    out.paste(tex, (0, 0))
+    for sx, sy, w, h, dx, dy in _LEGACY_LIMB_COPIES:
+        region = tex.crop((sx, sy, sx + w, sy + h)).transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        out.paste(region, (dx, dy))
+    return out
+
+
 def _normalize_skin(texture: Image.Image) -> Image.Image:
     tex = texture.convert("RGBA")
     w, h = tex.size
     if h == 32 and w == 64:
-        padded = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        padded.paste(tex, (0, 0))
-        return padded
+        return _expand_legacy_skin(tex)
     if w >= 64 and w == h and w % 64 == 0 and w != 64:
         return tex.resize((64, 64), Image.Resampling.NEAREST)
     if w != 64 or h != 64:
@@ -107,16 +134,29 @@ def _box_faces(cx, cy, cz, sx, sy, sz, u, v, w, h, d):
     return [(corners[n], uv[n], shade[n], face_uv[n]) for n in order]
 
 
+# How much bigger the second layer (jacket, sleeves, pants, hat) is than the
+# body part it sits on — same inflation Minecraft uses for the outer model.
+_OVERLAY_GROW = 0.5
+
+
 def _model_faces(slim: bool = False):
     arm_w = 3 if slim else 4
     arm_uv_w = 3 if slim else 4
+    g = _OVERLAY_GROW
     return (
+        # base layer: right leg, left leg, body, right arm, left arm, head
         _box_faces(-2, 6, 0, 4, 12, 4, 0, 16, 4, 12, 4)
         + _box_faces(2, 6, 0, 4, 12, 4, 16, 48, 4, 12, 4)
         + _box_faces(0, 18, 0, 8, 12, 4, 16, 16, 8, 12, 4)
         + _box_faces(-(4 + arm_w / 2), 18, 0, arm_w, 12, 4, 40, 16, arm_uv_w, 12, 4)
         + _box_faces(4 + arm_w / 2, 18, 0, arm_w, 12, 4, 32, 48, arm_uv_w, 12, 4)
         + _box_faces(0, 28, 0, 8, 8, 8, 0, 0, 8, 8, 8)
+        # second layer: pants, jacket, sleeves and hat (empty ones are dropped later)
+        + _box_faces(-2, 6, 0, 4 + g, 12 + g, 4 + g, 0, 32, 4, 12, 4)
+        + _box_faces(2, 6, 0, 4 + g, 12 + g, 4 + g, 0, 48, 4, 12, 4)
+        + _box_faces(0, 18, 0, 8 + g, 12 + g, 4 + g, 16, 32, 8, 12, 4)
+        + _box_faces(-(4 + arm_w / 2), 18, 0, arm_w + g, 12 + g, 4 + g, 40, 32, arm_uv_w, 12, 4)
+        + _box_faces(4 + arm_w / 2, 18, 0, arm_w + g, 12 + g, 4 + g, 48, 48, arm_uv_w, 12, 4)
         + _box_faces(0, 28, 0, 8.5, 8.5, 8.5, 32, 0, 8, 8, 8)
     )
 
@@ -186,6 +226,11 @@ def _prep_faces(tex: np.ndarray, slim: bool = False) -> list[tuple]:
     for verts, (u0, v0, uw, vh), shade, face_uv in _model_faces(slim=slim):
         face = np.ascontiguousarray(tex[v0 : v0 + vh, u0 : u0 + uw])
         if face.size == 0:
+            continue
+        # Fully transparent slice — an unused second-layer face, or a skin that
+        # keeps a body part only on the other layer. Drawing it costs time and
+        # paints nothing (the rasteriser discards alpha <= 8 anyway).
+        if not bool((face[..., 3] > 8).any()):
             continue
         centered = [(x, y - _CENTER_Y, z) for x, y, z in verts]
         prepared.append((centered, face, shade, face_uv))

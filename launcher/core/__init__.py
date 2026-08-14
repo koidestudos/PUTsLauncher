@@ -15,7 +15,13 @@ from launcher.core.instances import (
     list_instances,
 )
 from launcher.core.launch import DEFAULT_PHASES, build_launch_command, prepare_and_launch
-from launcher.core.modpacks import ModpackInfo, fetch_modpack_index, install_modpack
+from launcher.core.modpacks import (
+    ModpackInfo,
+    fetch_modpack_index,
+    installed_instance_for,
+    install_modpack,
+    verify_modpack_files,
+)
 from launcher.core.mods import list_bundled_mods, list_instance_mods, sync_mods
 from launcher.core.progress import ProgressState, ProgressTracker
 
@@ -33,6 +39,7 @@ __all__ = [
     "fetch_modpack_index",
     "forge_installed",
     "install_modpack",
+    "installed_instance_for",
     "is_game_ready",
     "list_bundled_mods",
     "list_instance_mods",
@@ -43,4 +50,5 @@ __all__ = [
     "resolve_java",
     "sync_mods",
     "uninstall_game",
+    "verify_modpack_files",
 ]

@@ -12,3 +12,7 @@ release/
 launcher_config.json
 *.log
 mods/
+CLAUDE.md
+AGENTS.md
+.tmp/
+.playwright-mcp/
