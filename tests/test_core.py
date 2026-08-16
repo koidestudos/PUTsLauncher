@@ -1459,3 +1459,32 @@ def test_install_curseforge_zip_uses_manifest(tmp_path, monkeypatch):
     assert (inst.minecraft_path / "mods" / "mod.jar").read_bytes() == b"cf-mod"
     assert (inst.minecraft_path / "mods" / "bundled.jar").read_bytes() == b"bundled"
     assert (inst.minecraft_path / "config" / "a.cfg").read_text() == "x=1\n"
+
+
+def test_parallel_download_jobs_retries_and_completes(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from launcher.core.pack_import import _parallel_download_jobs
+
+    attempts: dict[str, int] = {}
+
+    def flaky_download(url, dest, tracker=None, cancel_event=None, timeout=120):
+        name = Path(dest).name
+        attempts[name] = attempts.get(name, 0) + 1
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        if name == "b.jar" and attempts[name] < 2:
+            raise RuntimeError("flaky")
+        Path(dest).write_bytes(name.encode())
+
+    monkeypatch.setattr("launcher.core.pack_import.download_file", flaky_download)
+
+    jobs = [
+        (["https://cdn.modrinth.com/a.jar"], tmp_path / "a.jar"),
+        (["https://cdn.modrinth.com/b.jar"], tmp_path / "b.jar"),
+        (["https://cdn.modrinth.com/c.jar"], tmp_path / "c.jar"),
+    ]
+    _parallel_download_jobs(jobs, workers=3)
+    assert (tmp_path / "a.jar").read_bytes() == b"a.jar"
+    assert (tmp_path / "b.jar").read_bytes() == b"b.jar"
+    assert (tmp_path / "c.jar").read_bytes() == b"c.jar"
+    assert attempts["b.jar"] >= 2

@@ -372,7 +372,7 @@ def download_file(
             with dest.open("wb") as out:
                 while True:
                     _check_cancel(cancel_event)
-                    chunk = resp.read(256 * 1024)
+                    chunk = resp.read(1024 * 1024)
                     if not chunk:
                         break
                     out.write(chunk)

@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
+import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
 from launcher.config import FORGE_VERSION, MC_VERSION, cache_dir
@@ -30,6 +33,12 @@ from launcher.core.progress import ProgressTracker
 CURSE_API = "https://api.curse.tools/v1/cf"
 MODRINTH_API = "https://api.modrinth.com/v2"
 
+# Parallel install: many small jars — sequential was the 30‑min bottleneck.
+DOWNLOAD_WORKERS = 32
+META_WORKERS = 20
+DOWNLOAD_RETRIES = 5
+META_RETRIES = 4
+
 
 @dataclass
 class ImportRef:
@@ -47,25 +56,207 @@ def _http_json(url: str, timeout: int = 30, headers: Optional[dict[str, str]] = 
     }
     if headers:
         hdrs.update(headers)
-    req = Request(url, headers=hdrs)
-    try:
-        with urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except HTTPError as exc:
-        body = ""
+    last: Optional[BaseException] = None
+    for attempt in range(META_RETRIES):
+        req = Request(url, headers=hdrs)
         try:
-            body = exc.read().decode("utf-8", errors="replace")[:200]
-        except Exception:
-            pass
-        raise RuntimeError(f"HTTP {exc.code} em {url}: {body or exc.reason}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"Falha de rede: {exc.reason}") from exc
+            with urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", errors="replace")[:200]
+            except Exception:
+                pass
+            last = RuntimeError(f"HTTP {exc.code} em {url}: {body or exc.reason}")
+            # Don't hammer 404s
+            if exc.code in {400, 401, 403, 404}:
+                raise last from exc
+        except URLError as exc:
+            last = RuntimeError(f"Falha de rede: {exc.reason}")
+        except TimeoutError as exc:
+            last = RuntimeError(f"Timeout em {url}")
+            last.__cause__ = exc
+        time.sleep(min(0.35 * (2**attempt), 3.0))
+    raise RuntimeError(str(last) if last else f"Falha em {url}")
 
 
 def _check_cancel(cancel_event) -> None:
     if cancel_event is not None and cancel_event.is_set():
         raise CancelledError("Cancelado.")
 
+
+def _forgecdn_urls(file_id: int, file_name: str) -> list[str]:
+    """Build CDN candidates (padded + unpadded, edge + mediafilez)."""
+    name = quote(Path(file_name).name, safe="._-+()[]")
+    a, b = file_id // 1000, file_id % 1000
+    paths = [f"{a}/{b:03d}/{name}", f"{a}/{b}/{name}"]
+    hosts = ("https://edge.forgecdn.net/files/", "https://mediafilez.forgecdn.net/files/")
+    out: list[str] = []
+    for host in hosts:
+        for p in paths:
+            out.append(host + p)
+    # unique preserve order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for u in out:
+        if u not in seen:
+            seen.add(u)
+            uniq.append(u)
+    return uniq
+
+
+def _download_one(
+    urls: list[str],
+    dest: Path,
+    *,
+    cancel_event=None,
+    timeout: int = 180,
+) -> None:
+    """Try each URL with retries until the file lands on disk."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    last_err: Optional[BaseException] = None
+    for attempt in range(DOWNLOAD_RETRIES):
+        _check_cancel(cancel_event)
+        for url in urls:
+            _check_cancel(cancel_event)
+            if not is_trusted_url(url):
+                continue
+            try:
+                download_file(url, dest, tracker=None, cancel_event=cancel_event, timeout=timeout)
+                if dest.is_file() and dest.stat().st_size > 0:
+                    return
+                dest.unlink(missing_ok=True)
+                last_err = RuntimeError(f"Arquivo vazio: {dest.name}")
+            except CancelledError:
+                dest.unlink(missing_ok=True)
+                raise
+            except BaseException as exc:
+                dest.unlink(missing_ok=True)
+                last_err = exc
+        time.sleep(min(0.4 * (2**attempt), 5.0))
+    raise RuntimeError(f"Não baixou {dest.name}: {last_err}") from last_err
+
+
+def _parallel_download_jobs(
+    jobs: list[tuple[list[str], Path]],
+    *,
+    tracker: Optional[ProgressTracker] = None,
+    cancel_event=None,
+    label: str = "Mods",
+    workers: int = DOWNLOAD_WORKERS,
+) -> None:
+    """
+    Download many files at once. ``jobs`` is a list of (url_list, dest).
+    """
+    if not jobs:
+        return
+    total = len(jobs)
+    done = 0
+    lock = threading.Lock()
+    errors: list[str] = []
+
+    if tracker:
+        tracker.set_counts(0, total, f"{label}: 0/{total}")
+
+    def work(urls: list[str], dest: Path) -> str:
+        _download_one(urls, dest, cancel_event=cancel_event)
+        return dest.name
+
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, total))) as pool:
+        futures = {pool.submit(work, urls, dest): dest for urls, dest in jobs}
+        try:
+            for fut in as_completed(futures):
+                _check_cancel(cancel_event)
+                dest = futures[fut]
+                try:
+                    name = fut.result()
+                except CancelledError:
+                    for other in futures:
+                        other.cancel()
+                    raise
+                except Exception as exc:
+                    errors.append(f"{dest.name}: {exc}")
+                    name = dest.name
+                with lock:
+                    done += 1
+                    if tracker:
+                        tracker.set_counts(done, total, f"{label}: {done}/{total} · {name}")
+        except CancelledError:
+            for fut in futures:
+                fut.cancel()
+            raise
+
+    if errors:
+        sample = "; ".join(errors[:3])
+        more = f" (+{len(errors) - 3} outros)" if len(errors) > 3 else ""
+        raise RuntimeError(f"{len(errors)} arquivo(s) falharam no download. {sample}{more}")
+
+
+def _resolve_cf_file(project_id: int, file_id: int) -> tuple[str, list[str]]:
+    """Return (fileName, download url candidates) for one CurseForge file."""
+    meta = _http_json(f"{CURSE_API}/mods/{project_id}/files/{file_id}").get("data") or {}
+    fname = str(meta.get("fileName") or f"{file_id}.jar")
+    urls: list[str] = []
+    direct = meta.get("downloadUrl")
+    if direct:
+        urls.append(str(direct))
+    urls.extend(_forgecdn_urls(file_id, fname))
+    # unique
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for u in urls:
+        if u and u not in seen:
+            seen.add(u)
+            uniq.append(u)
+    return fname, uniq
+
+
+def _parallel_resolve_cf(
+    entries: list[dict[str, Any]],
+    *,
+    tracker: Optional[ProgressTracker] = None,
+    cancel_event=None,
+) -> list[tuple[str, list[str]]]:
+    """Resolve CurseForge file metadata in parallel → [(fileName, urls), ...]."""
+    total = len(entries)
+    results: list[Optional[tuple[str, list[str]]]] = [None] * total
+    errors: list[str] = []
+    done = 0
+    lock = threading.Lock()
+
+    if tracker:
+        tracker.set_detail(f"Resolvendo {total} arquivos CurseForge…")
+
+    def work(idx: int, entry: dict[str, Any]) -> tuple[int, str, list[str]]:
+        _check_cancel(cancel_event)
+        project_id = int(entry["projectID"])
+        file_id = int(entry["fileID"])
+        fname, urls = _resolve_cf_file(project_id, file_id)
+        return idx, fname, urls
+
+    with ThreadPoolExecutor(max_workers=max(1, min(META_WORKERS, total))) as pool:
+        futures = {pool.submit(work, i, e): i for i, e in enumerate(entries)}
+        for fut in as_completed(futures):
+            _check_cancel(cancel_event)
+            try:
+                idx, fname, urls = fut.result()
+                results[idx] = (fname, urls)
+            except CancelledError:
+                for other in futures:
+                    other.cancel()
+                raise
+            except Exception as exc:
+                errors.append(str(exc))
+            with lock:
+                done += 1
+                if tracker and (done % 5 == 0 or done == total):
+                    tracker.set_counts(done, total, f"Metadados: {done}/{total}")
+
+    if errors and any(r is None for r in results):
+        sample = "; ".join(errors[:2])
+        raise RuntimeError(f"Falha ao resolver arquivos CurseForge ({len(errors)}). {sample}")
+    return [r for r in results if r is not None]
 
 def parse_pack_url(url: str) -> ImportRef:
     """
@@ -351,8 +542,8 @@ def install_mrpack(
             tracker.set_phase("mods", f"Baixando {len(files)} mods do Modrinth…")
         _wipe_instance_mods(mc)
 
-        total = max(len(files), 1)
-        for i, entry in enumerate(files, start=1):
+        jobs: list[tuple[list[str], Path]] = []
+        for entry in files:
             _check_cancel(cancel_event)
             if not isinstance(entry, dict):
                 continue
@@ -362,26 +553,20 @@ def install_mrpack(
             rel = str(entry.get("path") or "").replace("\\", "/")
             if not rel or ".." in Path(rel).parts:
                 continue
-            downloads = entry.get("downloads") or []
+            downloads = [str(u) for u in (entry.get("downloads") or []) if u]
+            downloads = [u for u in downloads if is_trusted_url(u)]
             if not downloads:
                 continue
-            url = str(downloads[0])
-            if not is_trusted_url(url):
-                raise ValueError(f"Download inseguro no mrpack: {url}")
             dest = _contained(mc / rel, mc)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            # skip if hash matches
-            want = str((entry.get("hashes") or {}).get("sha512") or "").lower()
-            if dest.exists() and want:
-                # optional: we only have sha256 helper; skip expensive sha512 for speed if size matches
-                size = int(entry.get("fileSize") or 0)
-                if size and dest.stat().st_size == size:
-                    if tracker:
-                        tracker.set_counts(i, total, f"Já tem: {Path(rel).name}")
-                    continue
-            download_file(url, dest, tracker=None, cancel_event=cancel_event, timeout=180)
-            if tracker:
-                tracker.set_counts(i, total, f"Mods: {Path(rel).name}")
+            want_size = int(entry.get("fileSize") or 0)
+            if dest.exists() and want_size and dest.stat().st_size == want_size:
+                continue
+            jobs.append((downloads, dest))
+
+        _parallel_download_jobs(
+            jobs, tracker=tracker, cancel_event=cancel_event, label="Mods Modrinth"
+        )
 
         if tracker:
             tracker.set_detail("Aplicando overrides…")
@@ -429,26 +614,19 @@ def install_curseforge_zip(
             tracker.set_phase("mods", f"Baixando {len(files)} mods do CurseForge…")
         _wipe_instance_mods(mc)
 
-        total = max(len(files), 1)
-        for i, entry in enumerate(files, start=1):
-            _check_cancel(cancel_event)
-            project_id = int(entry["projectID"])
-            file_id = int(entry["fileID"])
-            meta = _http_json(f"{CURSE_API}/mods/{project_id}/files/{file_id}").get("data") or {}
-            fname = str(meta.get("fileName") or f"{file_id}.jar")
-            url = meta.get("downloadUrl")
-            if not url:
-                du = _http_json(f"{CURSE_API}/mods/{project_id}/files/{file_id}/download-url")
-                url = du.get("data") if isinstance(du, dict) else None
-            if not url:
-                url = f"https://edge.forgecdn.net/files/{file_id // 1000}/{file_id % 1000:03d}/{fname}"
-            if not is_trusted_url(str(url)):
-                raise ValueError(f"Download inseguro CurseForge: {url}")
+        resolved = _parallel_resolve_cf(files, tracker=tracker, cancel_event=cancel_event)
+        jobs: list[tuple[list[str], Path]] = []
+        for fname, urls in resolved:
             dest = _contained(mc / "mods" / Path(fname).name, mc)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            download_file(str(url), dest, tracker=None, cancel_event=cancel_event, timeout=180)
-            if tracker:
-                tracker.set_counts(i, total, f"Mods: {Path(fname).name}")
+            safe_urls = [u for u in urls if is_trusted_url(u)]
+            if not safe_urls:
+                raise ValueError(f"Download inseguro CurseForge: {fname}")
+            jobs.append((safe_urls, dest))
+
+        _parallel_download_jobs(
+            jobs, tracker=tracker, cancel_event=cancel_event, label="Mods CurseForge"
+        )
 
         overrides = str(manifest.get("overrides") or "overrides").strip() or "overrides"
         # If manifest is inside a folder, overrides are relative to that folder
