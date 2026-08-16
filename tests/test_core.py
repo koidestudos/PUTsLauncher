@@ -1297,3 +1297,165 @@ def test_duplicate_zip_entries_do_not_break_install(tmp_path, monkeypatch):
     inst = instances.create_instance("Pack", instance_id="pack", source="github")
     install_modpack_zip(zpath, inst)
     assert (inst.minecraft_path / "mods" / "a.jar").read_bytes() == b"segunda"
+
+
+def test_parse_pack_url_modrinth_and_curseforge():
+    from launcher.core.pack_import import parse_pack_url
+
+    mr = parse_pack_url("https://modrinth.com/modpack/better-mc-forge-bmc4")
+    assert mr.platform == "modrinth"
+    assert mr.slug == "better-mc-forge-bmc4"
+    assert mr.version_hint == ""
+
+    mrv = parse_pack_url("https://modrinth.com/modpack/foo/version/1.2.3")
+    assert mrv.version_hint == "1.2.3"
+
+    cf = parse_pack_url("https://www.curseforge.com/minecraft/modpacks/all-the-mods-9")
+    assert cf.platform == "curseforge"
+    assert cf.slug == "all-the-mods-9"
+
+    cff = parse_pack_url(
+        "https://www.curseforge.com/minecraft/modpacks/all-the-mods-9/files/7097953"
+    )
+    assert cff.version_hint == "7097953"
+
+    with pytest.raises(ValueError, match="não reconhecido"):
+        parse_pack_url("https://example.com/pack/foo")
+    with pytest.raises(ValueError, match="Modrinth"):
+        parse_pack_url("https://modrinth.com/mod/not-a-pack")
+    with pytest.raises(ValueError, match="Cole um link"):
+        parse_pack_url("   ")
+
+
+def test_forge_deps_from_mr_and_cf_manifest():
+    from launcher.core.pack_import import _forge_from_cf_manifest, _forge_from_mr_deps
+
+    mc, forge, loader = _forge_from_mr_deps({"minecraft": "1.20.1", "forge": "47.2.0"})
+    assert mc == "1.20.1"
+    assert forge == "1.20.1-47.2.0"
+    assert loader == "forge"
+
+    with pytest.raises(ValueError, match="fabric"):
+        _forge_from_mr_deps({"minecraft": "1.20.1", "fabric-loader": "0.15.0"})
+
+    mc, forge, loader = _forge_from_cf_manifest(
+        {
+            "minecraft": {
+                "version": "1.20.1",
+                "modLoaders": [{"id": "forge-47.2.0", "primary": True}],
+            }
+        }
+    )
+    assert mc == "1.20.1"
+    assert forge == "1.20.1-47.2.0"
+
+    with pytest.raises(ValueError, match="Forge"):
+        _forge_from_cf_manifest(
+            {
+                "minecraft": {
+                    "version": "1.20.1",
+                    "modLoaders": [{"id": "fabric-0.15.0", "primary": True}],
+                }
+            }
+        )
+
+
+def test_install_mrpack_downloads_and_overrides(tmp_path, monkeypatch):
+    import io
+    import zipfile as _zipfile
+    from pathlib import Path
+
+    import launcher.core.instances as instances
+    from launcher.core.pack_import import install_mrpack
+
+    _isolate_home(tmp_path, monkeypatch)
+    monkeypatch.setattr("launcher.core.skins_mod.ensure_elyby_skins_mod", lambda *a, **k: None)
+
+    calls: list[str] = []
+
+    def fake_download(url, dest, tracker=None, cancel_event=None, timeout=120):
+        calls.append(url)
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest).write_bytes(b"mod-bytes")
+
+    monkeypatch.setattr("launcher.core.pack_import.download_file", fake_download)
+
+    index = {
+        "dependencies": {"minecraft": "1.18.2", "forge": "40.2.0"},
+        "files": [
+            {
+                "path": "mods/demo.jar",
+                "downloads": ["https://cdn.modrinth.com/data/demo/demo.jar"],
+                "hashes": {"sha512": "aa"},
+                "env": {"client": "required"},
+            }
+        ],
+    }
+    mr = tmp_path / "pack.mrpack"
+    with _zipfile.ZipFile(mr, "w") as zf:
+        zf.writestr("modrinth.index.json", __import__("json").dumps(index))
+        zf.writestr("overrides/config/demo.toml", b"ok=true\n")
+        zf.writestr("client-overrides/options.txt", b"fov:1\n")
+
+    inst = instances.create_instance("MR", instance_id="mr-pack", source="modrinth")
+    mc_ver, forge_ver = install_mrpack(mr, inst)
+    assert mc_ver == "1.18.2"
+    assert forge_ver.startswith("1.18.2-")
+    assert (inst.minecraft_path / "mods" / "demo.jar").read_bytes() == b"mod-bytes"
+    assert (inst.minecraft_path / "config" / "demo.toml").read_text() == "ok=true\n"
+    assert (inst.minecraft_path / "options.txt").read_text() == "fov:1\n"
+    assert calls and "modrinth.com" in calls[0]
+
+
+def test_install_curseforge_zip_uses_manifest(tmp_path, monkeypatch):
+    import json
+    import zipfile as _zipfile
+    from pathlib import Path
+
+    import launcher.core.instances as instances
+    from launcher.core.pack_import import install_curseforge_zip
+
+    _isolate_home(tmp_path, monkeypatch)
+    monkeypatch.setattr("launcher.core.skins_mod.ensure_elyby_skins_mod", lambda *a, **k: None)
+
+    def fake_http_json(url, timeout=30, headers=None):
+        if url.endswith("/files/1002"):
+            return {
+                "data": {
+                    "id": 1002,
+                    "fileName": "mod.jar",
+                    "downloadUrl": "https://edge.forgecdn.net/files/1/002/mod.jar",
+                }
+            }
+        if url.endswith("/download-url"):
+            return {"data": "https://edge.forgecdn.net/files/1/002/mod.jar"}
+        raise AssertionError(url)
+
+    def fake_download(url, dest, tracker=None, cancel_event=None, timeout=120):
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest).write_bytes(b"cf-mod")
+
+    monkeypatch.setattr("launcher.core.pack_import._http_json", fake_http_json)
+    monkeypatch.setattr("launcher.core.pack_import.download_file", fake_download)
+
+    manifest = {
+        "minecraft": {
+            "version": "1.20.1",
+            "modLoaders": [{"id": "forge-47.2.0", "primary": True}],
+        },
+        "files": [{"projectID": 123, "fileID": 1002, "required": True}],
+        "overrides": "overrides",
+    }
+    zpath = tmp_path / "cf.zip"
+    with _zipfile.ZipFile(zpath, "w") as zf:
+        zf.writestr("manifest.json", json.dumps(manifest))
+        zf.writestr("overrides/mods/bundled.jar", b"bundled")
+        zf.writestr("overrides/config/a.cfg", b"x=1\n")
+
+    inst = instances.create_instance("CF", instance_id="cf-pack", source="curseforge")
+    mc_ver, forge_ver = install_curseforge_zip(zpath, inst)
+    assert mc_ver == "1.20.1"
+    assert forge_ver == "1.20.1-47.2.0"
+    assert (inst.minecraft_path / "mods" / "mod.jar").read_bytes() == b"cf-mod"
+    assert (inst.minecraft_path / "mods" / "bundled.jar").read_bytes() == b"bundled"
+    assert (inst.minecraft_path / "config" / "a.cfg").read_text() == "x=1\n"

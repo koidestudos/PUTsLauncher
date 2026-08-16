@@ -45,13 +45,13 @@ def sync_mods(tracker: Optional[ProgressTracker] = None) -> int:
     n = len(jars)
 
     # GitHub / remote pack already extracted into the instance
-    if inst and inst.source in {"github", "r2"}:
+    if inst and inst.source in {"github", "r2", "modrinth", "curseforge"}:
         if tracker:
             tracker.set_phase("mods", f"Modpack — {n} mods")
         if n == 0:
             raise FileNotFoundError(
                 "Esta instância não tem mods.\n"
-                "Instale de novo pelo + Modpack (catálogo GitHub)."
+                "Instale de novo pelo + Modpack (link CurseForge/Modrinth ou catálogo GitHub)."
             )
         try:
             from launcher.core.skins_mod import ensure_elyby_skins_mod
