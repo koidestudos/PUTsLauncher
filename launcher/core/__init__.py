@@ -22,6 +22,7 @@ from launcher.core.modpacks import (
     install_modpack,
     verify_modpack_files,
 )
+from launcher.core.pack_import import install_from_url, parse_pack_url
 from launcher.core.mods import list_bundled_mods, list_instance_mods, sync_mods
 from launcher.core.progress import ProgressState, ProgressTracker
 
@@ -38,12 +39,14 @@ __all__ = [
     "delete_instance",
     "fetch_modpack_index",
     "forge_installed",
+    "install_from_url",
     "install_modpack",
     "installed_instance_for",
     "is_game_ready",
     "list_bundled_mods",
     "list_instance_mods",
     "list_instances",
+    "parse_pack_url",
     "prepare_and_launch",
     "prepare_game",
     "reinstall_game",

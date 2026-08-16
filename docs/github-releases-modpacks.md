@@ -96,14 +96,25 @@ options.txt      (opcional)
 
 ## No launcher
 
-1. **Opções** → `dono/repo`
-2. **+ Modpack** → instalar (incluindo o PUTs SMP — não vem mais na pasta do EXE)
+1. **+ Modpack** → cole um link CurseForge/Modrinth **ou** escolha um pack do catálogo GitHub
+2. (Opcional) **Opções** → `dono/repo` para listar Releases
 3. Trocar instância no menu **Instância**
 4. **BAIXAR** / **JOGAR**
 
 Java fica em `~/MinecraftPUTS/shared/`. Cada pack em `~/MinecraftPUTS/instances/<id>/minecraft/`.
 
-O download do launcher **não** inclui pasta `mods`. Tudo sobe pelo Release.
+O download do launcher **não** inclui pasta `mods`. Packs sobem pelo Release ou pelo link importado.
+
+## Importar CurseForge / Modrinth
+
+No diálogo **+ Modpack**, cole a URL da página do modpack:
+
+- `https://modrinth.com/modpack/<slug>`
+- `https://modrinth.com/modpack/<slug>/version/<versão>`
+- `https://www.curseforge.com/minecraft/modpacks/<slug>`
+- `https://www.curseforge.com/minecraft/modpacks/<slug>/files/<fileId>`
+
+Só packs **Forge** (Fabric/Quilt/NeoForge ainda não). O launcher baixa o `.mrpack` / zip, cria a instância e instala Java+Forge.
 
 ## Skins no modo offline (Ely.by)
 

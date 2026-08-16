@@ -1,13 +1,12 @@
 # PUTs Launcher
 
-Launcher do SMP com visual maracujá. Mods vêm do **GitHub Releases** (`+ Modpack`), não junto do EXE.
+Launcher do SMP com visual maracujá. Mods vêm do **+ Modpack** (link CurseForge/Modrinth ou catálogo GitHub), não junto do EXE.
 
 ## Fluxo
 
-1. Em **Opções**, configure o catálogo: `dono/repo` (ex.: `koidestudos/PUTsModpacks`)
-2. **+ Modpack** → instala o pack (ex.: PUTs SMP) do Release
-3. **BAIXAR** → Java + Forge daquela instância
-4. **JOGAR** — Offline ou Microsoft
+1. **+ Modpack** → cole um link do CurseForge ou Modrinth (Forge), **ou** configure o catálogo GitHub em Opções (`dono/repo`)
+2. **BAIXAR** → Java + Forge daquela instância
+3. **JOGAR** — Offline ou Microsoft
 
 ## Distribuição
 
@@ -17,7 +16,7 @@ Só o EXE:
 PUTsLauncher.exe
 ```
 
-Os zips de modpack ficam no **GitHub Releases** + `index.json`.  
+Os zips de modpack ficam no **GitHub Releases** + `index.json`, ou são baixados direto do CurseForge/Modrinth.  
 Docs: [`docs/github-releases-modpacks.md`](docs/github-releases-modpacks.md).
 
 ## Windows build

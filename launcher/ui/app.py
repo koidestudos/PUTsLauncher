@@ -44,11 +44,13 @@ from launcher.core import (
     ProgressTracker,
     activate_instance,
     fetch_modpack_index,
+    install_from_url,
     install_modpack,
     installed_instance_for,
     is_game_ready,
     list_instance_mods,
     list_instances,
+    parse_pack_url,
     prepare_and_launch,
     prepare_game,
     reinstall_game,
@@ -783,32 +785,134 @@ class PUTsLauncherApp(ctk.CTk):
         if self._busy:
             messagebox.showinfo("Modpacks", "Espere a tarefa atual terminar antes de abrir o catálogo.")
             return
-        url = self.cfg.catalog_source()
-        if not url:
-            messagebox.showinfo(
-                "Catálogo GitHub",
-                "Configure o repositório de releases em Opções.\n\n"
-                "Ex.: koidestudos/PUTsModpacks\n"
-                "ou a URL do index.json de um Release.",
-            )
-            self._open_options()
-            return
+
+        catalog_url = self.cfg.catalog_source()
 
         win = ctk.CTkToplevel(self)
-        win.title("Modpacks (GitHub Releases)")
-        win.geometry("520x560")
-        win.minsize(460, 420)
+        win.title("Modpacks")
+        win.geometry("540x620")
+        win.minsize(480, 480)
         win.configure(fg_color=COLORS["bg1"])
         win.transient(self)
 
         head = ctk.CTkFrame(win, fg_color="transparent")
-        head.pack(fill="x", padx=20, pady=(18, 8))
+        head.pack(fill="x", padx=20, pady=(18, 4))
         ctk.CTkLabel(head, text="Modpacks", font=FONTS["title"], text_color=COLORS["accent"]).pack(anchor="w")
-        status = ctk.CTkLabel(head, text="Carregando catálogo…", font=FONTS["small"], text_color=COLORS["muted"])
-        status.pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(
+            head,
+            text="Cole um link do CurseForge ou Modrinth, ou use o catálogo GitHub.",
+            font=FONTS["small"],
+            text_color=COLORS["muted"],
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
+        # --- Import by URL ---
+        import_box = ctk.CTkFrame(win, fg_color=COLORS["panel"], corner_radius=14)
+        import_box.pack(fill="x", padx=16, pady=(12, 6))
+        ctk.CTkLabel(
+            import_box,
+            text="Importar por link",
+            font=FONTS["body_bold"],
+            text_color=COLORS["text"],
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(12, 0))
+        ctk.CTkLabel(
+            import_box,
+            text="Ex.: modrinth.com/modpack/…  ·  curseforge.com/minecraft/modpacks/…",
+            font=FONTS["tiny"],
+            text_color=COLORS["muted"],
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(2, 6))
+        link_var = ctk.StringVar()
+        link_entry = ctk.CTkEntry(
+            import_box,
+            textvariable=link_var,
+            height=36,
+            corner_radius=10,
+            font=FONTS["small"],
+            placeholder_text="https://modrinth.com/modpack/…",
+        )
+        link_entry.pack(fill="x", padx=14, pady=(0, 8))
+
+        def do_import():
+            raw = (link_var.get() or "").strip()
+            if not raw:
+                messagebox.showinfo("Importar", "Cole o link do modpack primeiro.", parent=win)
+                return
+            try:
+                parse_pack_url(raw)
+            except ValueError as exc:
+                messagebox.showerror("Importar", str(exc), parent=win)
+                return
+            self._install_from_pack_url(raw, win)
+
+        ctk.CTkButton(
+            import_box,
+            text="Criar instância",
+            height=36,
+            corner_radius=10,
+            font=FONTS["body_bold"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hot"],
+            text_color=COLORS["accent_text"],
+            command=do_import,
+        ).pack(fill="x", padx=14, pady=(0, 12))
+        link_entry.bind("<Return>", lambda _e: do_import())
+
+        # --- GitHub catalog ---
+        gh_head = ctk.CTkFrame(win, fg_color="transparent")
+        gh_head.pack(fill="x", padx=20, pady=(10, 0))
+        ctk.CTkLabel(
+            gh_head,
+            text="Catálogo GitHub",
+            font=FONTS["body_bold"],
+            text_color=COLORS["text"],
+            anchor="w",
+        ).pack(anchor="w")
+        status = ctk.CTkLabel(
+            gh_head,
+            text="Carregando…" if catalog_url else "Não configurado — use Opções ou o link acima.",
+            font=FONTS["small"],
+            text_color=COLORS["muted"],
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        )
+        status.pack(anchor="w", pady=(2, 0))
 
         scroll = ctk.CTkScrollableFrame(win, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=16, pady=8)
+
+        if not catalog_url:
+            tip = ctk.CTkFrame(scroll, fg_color=COLORS["panel"], corner_radius=14)
+            tip.pack(fill="x", pady=6)
+            ctk.CTkLabel(
+                tip,
+                text="Sem repositório de releases. Em Opções você pode apontar "
+                "dono/repo (ex.: koidestudos/PUTsModpacks) para listar packs aqui.",
+                font=FONTS["small"],
+                text_color=COLORS["muted"],
+                wraplength=460,
+                justify="left",
+                anchor="w",
+            ).pack(fill="x", padx=14, pady=14)
+            ctk.CTkButton(
+                tip,
+                text="Abrir Opções",
+                height=32,
+                corner_radius=10,
+                font=FONTS["small"],
+                fg_color="transparent",
+                hover_color=COLORS["stroke"],
+                text_color=COLORS["muted"],
+                border_width=1,
+                border_color=COLORS["stroke"],
+                command=lambda: (win.destroy(), self._open_options()),
+            ).pack(fill="x", padx=14, pady=(0, 12))
+            _fit_window(win, 540, 520, pad=80)
+            return
 
         def render(packs, err=None):
             for child in scroll.winfo_children():
@@ -844,7 +948,7 @@ class PUTsLauncherApp(ctk.CTk):
                         justify="left",
                     ).pack(fill="x", padx=14, pady=(4, 0))
 
-                installed = installed_instance_for(pack, url)
+                installed = installed_instance_for(pack, catalog_url)
                 same_version = installed is not None and (
                     (installed.modpack_version or "") == (pack.version or "")
                 )
@@ -867,11 +971,11 @@ class PUTsLauncherApp(ctk.CTk):
                 def make_action(p=pack, inst=installed, same=same_version):
                     def run():
                         if inst is None:
-                            self._install_catalog_pack(p, win, origin=url)
+                            self._install_catalog_pack(p, win, origin=catalog_url)
                         elif same:
                             self._verify_catalog_pack(p, inst, win)
                         else:
-                            self._install_catalog_pack(p, win, existing=inst, origin=url)
+                            self._install_catalog_pack(p, win, existing=inst, origin=catalog_url)
 
                     return run
 
@@ -896,7 +1000,7 @@ class PUTsLauncherApp(ctk.CTk):
 
                 if installed is not None:
                     def make_reinstall(p=pack, inst=installed):
-                        return lambda: self._install_catalog_pack(p, win, existing=inst, origin=url)
+                        return lambda: self._install_catalog_pack(p, win, existing=inst, origin=catalog_url)
 
                     ctk.CTkButton(
                         card,
@@ -912,15 +1016,55 @@ class PUTsLauncherApp(ctk.CTk):
                         command=make_reinstall(),
                     ).pack(fill="x", padx=14, pady=(0, 12))
 
-            _fit_window(win, 520, 560, pad=120)
+            _fit_window(win, 540, 620, pad=120)
 
         def job():
-            return fetch_modpack_index(url)
+            return fetch_modpack_index(catalog_url)
 
         def done(packs, err):
             render(packs or [], err)
 
         self._run_bg(job, done, busy_text=None)
+
+    def _install_from_pack_url(self, url: str, catalog_win=None) -> None:
+        if catalog_win is not None:
+            try:
+                catalog_win.destroy()
+            except Exception:
+                pass
+
+        self._cancel.clear()
+        self._show_progress(True)
+        self.progress_title.configure(text="Importar pack")
+        self.detail_label.configure(text="Baixando modpack…")
+
+        def job():
+            tracker = ProgressTracker({"mods": 0.55, "java": 0.2, "forge": 0.25})
+            tracker.on_update = lambda s: self.after(0, lambda: self._set_progress_ui(s))
+            inst = install_from_url(url, tracker=tracker, cancel_event=self._cancel)
+            activate_instance(inst.id)
+            apply_instance_to_config(self.cfg, inst)
+            self.cfg = LauncherConfig.load()
+            prepare_game(self.cfg, tracker=tracker, cancel_event=self._cancel)
+            sync_mods(tracker=tracker)
+            return inst
+
+        def done(inst, err):
+            self._show_progress(False)
+            if isinstance(err, CancelledError) or self._cancel.is_set():
+                self.detail_label.configure(text="Importação cancelada.")
+                self._refresh_instance_menu()
+                self._refresh_ready_state()
+                return
+            if err:
+                messagebox.showerror("Importar modpack", str(err))
+                return
+            self.cfg = LauncherConfig.load()
+            self._refresh_instance_menu()
+            self._refresh_ready_state()
+            messagebox.showinfo("Importar modpack", f"Instância pronta: {inst.name}")
+
+        self._run_bg(job, done, busy_text="PACK…")
 
     def _install_catalog_pack(self, pack, catalog_win=None, existing=None, origin: str = "") -> None:
         if existing is not None:
@@ -1851,7 +1995,7 @@ class PUTsLauncherApp(ctk.CTk):
                 prepare_game(self.cfg, tracker=tracker, cancel_event=self._cancel)
             if self._cancel.is_set():
                 raise CancelledError("Download cancelado.")
-            # Mods vêm do + Modpack (GitHub), não da pasta do EXE
+            # Mods vêm do + Modpack (link ou GitHub), não da pasta do EXE
             return True
 
         def done(_ok, err):
