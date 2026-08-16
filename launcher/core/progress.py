@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -51,6 +52,7 @@ class ProgressTracker:
         self._total = 0
         self._started = time.monotonic()
         self._last_emit = 0.0
+        self._lock = threading.Lock()
 
     def set_phase(self, phase: str, detail: str = "") -> None:
         if phase not in self.phases:
@@ -76,20 +78,22 @@ class ProgressTracker:
         self.emit()
 
     def set_counts(self, current: int, total: int, detail: str = "") -> None:
-        self._current = max(0, current)
-        self._total = max(0, total)
-        if total > 0:
-            self._phase_progress = min(1.0, current / total)
-        if detail:
-            self._detail = detail
-        self.emit()
+        with self._lock:
+            self._current = max(0, current)
+            self._total = max(0, total)
+            if total > 0:
+                self._phase_progress = min(1.0, current / total)
+            if detail:
+                self._detail = detail
+            self.emit()
 
     def complete_phase(self, detail: str = "") -> None:
-        self._phase_progress = 1.0
-        self._completed.add(self._phase)
-        if detail:
-            self._detail = detail
-        self.emit(force=True)
+        with self._lock:
+            self._phase_progress = 1.0
+            self._completed.add(self._phase)
+            if detail:
+                self._detail = detail
+            self.emit(force=True)
 
     def overall_percent(self) -> float:
         done = 0.0
