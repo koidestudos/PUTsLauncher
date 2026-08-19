@@ -16,18 +16,32 @@ Exemplo: `koidestudos/PUTsModpacks`
 
 ## Como publicar packs
 
-### Opção A — só zips nos Releases (mais simples)
+### Pelo launcher (recomendado)
 
-Crie um Release e anexe um ou mais `.zip`. Cada zip vira um modpack no catálogo.
+Em **Criar meu modpack** com GitHub conectado, o launcher publica no Release fixo:
 
 ```text
-Release v1.0.0 — "PUTs SMP"
+Release tag: modpacks
+Release name: Modpacks
+  ├─ index.json          (lista todos os packs)
+  ├─ meu-pack-1.0.0.zip
+  └─ outro-pack-2.1.0.zip
+```
+
+Cada nova publicação **atualiza** esse mesmo Release (merge no `index.json`), em vez de criar `v1.0.0`, `v1.0.1`, etc. Em Opções → Catálogo use `dono/repo`.
+
+### Opção A — só zips nos Releases (mais simples)
+
+Crie um Release (preferencialmente **Modpacks**) e anexe um ou mais `.zip`. Cada zip vira um modpack no catálogo.
+
+```text
+Release Modpacks
   └─ puts-smp.zip
 ```
 
-### Opção B — `index.json` no Release (recomendado se tiver vários packs)
+### Opção B — `index.json` no Release Modpacks (vários packs)
 
-No Release, anexe:
+No Release **Modpacks**, anexe:
 
 ```text
 index.json
@@ -124,7 +138,9 @@ Em **+ Modpack → Criar meu modpack**:
 2. Sem busca: lista os **mais baixados**; use os botões **Modrinth / CurseForge** pra filtrar
 3. **+ Meu .jar** pra incluir um jar local
 4. (Opcional) **Conectar GitHub** com um Personal Access Token (`repo`), escolha o repositório e marque publicar Release
-5. Cria a instância — se publicou, o catálogo vira `dono/repo` e outros podem usar o mesmo link em Opções
+5. Cria a instância — se publicou, sobe no Release **Modpacks** e o catálogo vira `dono/repo` (outros usam o mesmo em Opções → **+ Modpack**)
+
+Java: Minecraft **1.21+** (NeoForge incluso) baixa **Java 21** (Mojang); 1.18–1.20 usam Java 17.
 
 ## Cache
 

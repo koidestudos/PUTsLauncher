@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -10,6 +12,7 @@ import minecraft_launcher_lib as mll
 
 from launcher.config import (
     JVM_RUNTIME,
+    JVM_RUNTIME_JAVA21,
     LauncherConfig,
     logs_dir,
     minecraft_dir,
@@ -40,14 +43,61 @@ __all__ = [
     "forge_installed",
     "forge_profile_id",
     "is_game_ready",
+    "java_runtime_for_minecraft",
     "java_runtime_path",
     "normalize_forge_install_version",
     "prepare_game",
+    "probe_java_major",
     "reinstall_game",
+    "required_java_major",
     "resolve_java",
     "uninstall_game",
     "write_launch_log",
 ]
+
+
+def java_runtime_for_minecraft(mc_version: str) -> str:
+    """
+    Mojang JVM runtime id for a Minecraft version.
+
+    1.21+ needs Java 21 (``java-runtime-delta``); 1.18–1.20.x use Java 17 (gamma).
+    """
+    text = (mc_version or "").strip()
+    match = re.match(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?", text)
+    if not match:
+        return JVM_RUNTIME
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    if major > 1 or (major == 1 and minor >= 21):
+        return JVM_RUNTIME_JAVA21
+    return JVM_RUNTIME
+
+
+def required_java_major(mc_version: str) -> int:
+    return 21 if java_runtime_for_minecraft(mc_version) == JVM_RUNTIME_JAVA21 else 17
+
+
+def probe_java_major(java_exe: str) -> Optional[int]:
+    """Return the major version reported by ``java -version``, or None on failure."""
+    try:
+        proc = subprocess.run(
+            [java_exe, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    blob = f"{proc.stderr or ''}\n{proc.stdout or ''}"
+    # openjdk version "21.0.2"  /  java version "1.8.0_372"
+    m = re.search(r'version\s+"(\d+)(?:\.(\d+))?', blob, flags=re.I)
+    if not m:
+        return None
+    major = int(m.group(1))
+    if major == 1 and m.group(2):
+        return int(m.group(2))
+    return major
 
 
 def forge_installed(mc_dir: Optional[Path] = None, profile: Optional[str] = None) -> bool:
@@ -127,60 +177,99 @@ def clean_incomplete_forge(mc_dir: Optional[Path] = None) -> None:
     clean_version_natives(root, mc_version, forge_install, profile)
 
 
-def java_runtime_path(mc_dir: Optional[Path] = None) -> Optional[str]:
+def java_runtime_path(
+    mc_dir: Optional[Path] = None,
+    runtime: Optional[str] = None,
+) -> Optional[str]:
+    jvm = runtime or JVM_RUNTIME
     for root in (puts_home() / "shared", Path(mc_dir or minecraft_dir())):
-        path = mll.runtime.get_executable_path(JVM_RUNTIME, str(root))
+        path = mll.runtime.get_executable_path(jvm, str(root))
         if path and Path(path).exists():
             return path
     return None
 
 
-def resolve_java(cfg: LauncherConfig, mc_dir: Optional[Path] = None) -> Optional[str]:
+def resolve_java(
+    cfg: LauncherConfig,
+    mc_dir: Optional[Path] = None,
+    mc_version: Optional[str] = None,
+) -> Optional[str]:
+    need_major = required_java_major(mc_version or "1.18.2")
     if cfg.java_path and Path(cfg.java_path).exists():
-        return cfg.java_path
-    bundled = java_runtime_path(mc_dir)
+        major = probe_java_major(cfg.java_path)
+        if major is None or major >= need_major:
+            return cfg.java_path
+    runtime = java_runtime_for_minecraft(mc_version or "1.18.2")
+    bundled = java_runtime_path(mc_dir, runtime=runtime)
     if bundled:
         return bundled
     for candidate in ("javaw", "java"):
         found = shutil.which(candidate)
         if found:
-            return found
+            major = probe_java_major(found)
+            if major is None or major >= need_major:
+                return found
     return None
 
 
-def ensure_java(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None, cancel_event=None) -> str:
-    """Download Mojang Java 17 into MinecraftPUTS/shared (shared across instances)."""
+def ensure_java(
+    cfg: LauncherConfig,
+    tracker: Optional[ProgressTracker] = None,
+    cancel_event=None,
+    mc_version: Optional[str] = None,
+) -> str:
+    """Download the Mojang JVM required by the active Minecraft version into shared/."""
+    if not mc_version:
+        try:
+            _, mc_version, _, _ = active_loader_target()
+        except Exception:
+            mc_version = "1.18.2"
+
+    runtime = java_runtime_for_minecraft(mc_version)
+    need_major = required_java_major(mc_version)
+    label = f"Java {need_major}"
     shared = puts_home() / "shared"
     shared.mkdir(parents=True, exist_ok=True)
+
     chosen = (cfg.java_path or "").strip()
     if chosen and Path(chosen).exists():
+        major = probe_java_major(chosen)
+        # Honor explicit path when we cannot probe (custom wrapper) or when new enough.
+        if major is None or major >= need_major:
+            if tracker:
+                tracker.set_phase("java", f"Usando Java configurado: {chosen}")
+                tracker.complete_phase("Java pronto")
+            return chosen
         if tracker:
-            tracker.set_phase("java", f"Usando Java configurado: {chosen}")
-            tracker.complete_phase("Java pronto")
-        return chosen
-    bundled = java_runtime_path(shared)
+            tracker.set_detail(
+                f"Java configurado é {major}; {label} é necessário para MC {mc_version} — baixando Mojang…"
+            )
+
+    bundled = java_runtime_path(shared, runtime=runtime)
     if bundled:
         if tracker:
-            tracker.set_phase("java", "Java 17 já instalado")
+            tracker.set_phase("java", f"{label} já instalado")
             tracker.complete_phase("Java pronto")
         return bundled
 
     if tracker:
-        tracker.set_phase("java", "Baixando Java 17 (Mojang)…")
+        tracker.set_phase("java", f"Baixando {label} (Mojang) para Minecraft {mc_version}…")
     callback = tracker.as_mll_callback("java", cancel_event=cancel_event) if tracker else None
-    mll.runtime.install_jvm_runtime(JVM_RUNTIME, str(shared), callback=callback)
-    path = java_runtime_path(shared)
+    mll.runtime.install_jvm_runtime(runtime, str(shared), callback=callback)
+    path = java_runtime_path(shared, runtime=runtime)
     if not path:
-        fallback = resolve_java(cfg, shared)
+        fallback = resolve_java(cfg, shared, mc_version=mc_version)
         if fallback:
             if tracker:
                 tracker.complete_phase(f"Usando Java do sistema: {fallback}")
             return fallback
-        raise RuntimeError("Falha ao instalar o Java 17 dentro de MinecraftPUTS.")
+        raise RuntimeError(
+            f"Falha ao instalar {label} (runtime {runtime}) para Minecraft {mc_version}."
+        )
     if tracker:
-        tracker.complete_phase("Java 17 instalado")
-    cfg.java_path = path
-    cfg.save()
+        tracker.complete_phase(f"{label} instalado")
+    # Do not overwrite cfg.java_path with the Mojang runtime — that locked users
+    # on Java 17 when switching to 1.21+ NeoForge.
     return path
 
 
@@ -287,13 +376,21 @@ def _run_forge_with_java(java_path: str, tracker: Optional[ProgressTracker] = No
 def is_game_ready(mc_dir: Optional[Path] = None) -> bool:
     """True when Java + loader profile are already installed (Baixar → Jogar)."""
     root = Path(mc_dir or minecraft_dir())
-    _, _, _, profile = active_loader_target()
+    _, mc_version, _, profile = active_loader_target()
     if not forge_installed(root, profile=profile):
         return False
-    if not java_runtime_path(root):
-        if not shutil.which("javaw") and not shutil.which("java"):
-            return False
-    return True
+    runtime = java_runtime_for_minecraft(mc_version)
+    if java_runtime_path(root, runtime=runtime):
+        return True
+    # Custom / system Java may still be enough
+    for candidate in ("javaw", "java"):
+        found = shutil.which(candidate)
+        if not found:
+            continue
+        major = probe_java_major(found)
+        if major is None or major >= required_java_major(mc_version):
+            return True
+    return False
 
 
 def uninstall_game() -> None:
@@ -343,12 +440,12 @@ class CancelledError(RuntimeError):
 def prepare_game(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None, cancel_event=None) -> str:
     """
     Full bootstrap into the active instance:
-      1) Java 17 (shared)
+      1) Java matching MC version (shared Mojang runtime)
       2) Minecraft + Forge/Fabric/NeoForge/Quilt for this instance
     Returns path to java executable.
     """
     puts = minecraft_dir()
-    loader, _mc, loader_ver, profile = active_loader_target()
+    loader, mc_version, loader_ver, profile = active_loader_target()
     label = loader_display_name(loader)
     if tracker:
         tracker.set_detail(f"Pasta: {puts}  ·  {profile}")
@@ -358,7 +455,7 @@ def prepare_game(cfg: LauncherConfig, tracker: Optional[ProgressTracker] = None,
             raise CancelledError("Download cancelado.")
 
     check_cancel()
-    java = ensure_java(cfg, tracker=tracker, cancel_event=cancel_event)
+    java = ensure_java(cfg, tracker=tracker, cancel_event=cancel_event, mc_version=mc_version)
     check_cancel()
     installed = _run_loader_with_java(java, tracker=tracker, cancel_event=cancel_event)
     if tracker:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import zipfile
 
 import pytest
@@ -1603,13 +1604,217 @@ def test_build_modpack_zip_for_github(tmp_path, monkeypatch):
         dest_zip=dest,
     )
     assert dest.is_file() and dest.stat().st_size > 0
-    import zipfile
+    import zipfile as zfmod
 
-    with zipfile.ZipFile(dest) as zf:
+    with zfmod.ZipFile(dest) as zf:
         names = zf.namelist()
         assert "mods/a.jar" in names
         assert "mods/b.jar" in names
         assert "pack.meta.json" in names
+
+
+def test_java_runtime_for_minecraft_versions():
+    from launcher.config import JVM_RUNTIME, JVM_RUNTIME_JAVA21
+    from launcher.core.installer import java_runtime_for_minecraft, required_java_major
+
+    assert java_runtime_for_minecraft("1.18.2") == JVM_RUNTIME
+    assert java_runtime_for_minecraft("1.20.1") == JVM_RUNTIME
+    assert required_java_major("1.20.1") == 17
+    assert java_runtime_for_minecraft("1.21") == JVM_RUNTIME_JAVA21
+    assert java_runtime_for_minecraft("1.21.1") == JVM_RUNTIME_JAVA21
+    assert required_java_major("1.21.1") == 21
+
+
+def test_ensure_java_skips_too_old_configured_path(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import launcher.core.installer as installer
+    from launcher.config import JVM_RUNTIME_JAVA21, LauncherConfig
+
+    home = tmp_path / "MinecraftPUTS"
+    home.mkdir()
+    monkeypatch.setattr(installer, "puts_home", lambda: home)
+
+    old_java = tmp_path / "java17"
+    old_java.write_text("#!/bin/sh\n", encoding="utf-8")
+    old_java.chmod(0o755)
+
+    installed: list[str] = []
+
+    def fake_install(runtime, directory, callback=None, max_workers=None):
+        installed.append(runtime)
+        runtime_dir = Path(directory) / "runtime" / runtime
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        exe = runtime_dir / "bin" / "java"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.write_text("ok", encoding="utf-8")
+
+    monkeypatch.setattr(installer, "probe_java_major", lambda _p: 17)
+    monkeypatch.setattr(installer.mll.runtime, "install_jvm_runtime", fake_install)
+    monkeypatch.setattr(
+        installer.mll.runtime,
+        "get_executable_path",
+        lambda runtime, directory: str(Path(directory) / "runtime" / runtime / "bin" / "java")
+        if (Path(directory) / "runtime" / runtime / "bin" / "java").exists()
+        else None,
+    )
+
+    cfg = LauncherConfig(java_path=str(old_java))
+    path = installer.ensure_java(cfg, mc_version="1.21.1")
+    assert installed == [JVM_RUNTIME_JAVA21]
+    assert "java-runtime-delta" in path
+    assert cfg.java_path == str(old_java)  # não grava o runtime Mojang por cima
+
+
+def test_merge_catalog_index_replaces_by_id():
+    from launcher.core.github_publish import merge_catalog_index
+
+    existing = {
+        "modpacks": [
+            {"id": "a", "name": "A", "version": "1.0.0", "download_url": "a.zip"},
+            {"id": "b", "name": "B", "version": "1.0.0", "download_url": "b.zip"},
+        ]
+    }
+    merged = merge_catalog_index(
+        existing,
+        {"id": "a", "name": "A", "version": "2.0.0", "download_url": "a-2.zip"},
+    )
+    assert len(merged["modpacks"]) == 2
+    by_id = {p["id"]: p for p in merged["modpacks"]}
+    assert by_id["a"]["version"] == "2.0.0"
+    assert by_id["a"]["download_url"] == "a-2.zip"
+    assert by_id["b"]["version"] == "1.0.0"
+
+
+def test_releases_catalog_prefers_modpacks_release(monkeypatch):
+    from launcher.core import modpacks as mp
+
+    releases = [
+        {
+            "tag_name": "v1.0.0",
+            "name": "Old pack release",
+            "assets": [
+                {
+                    "name": "index.json",
+                    "browser_download_url": "https://example.com/old-index.json",
+                },
+                {
+                    "name": "old.zip",
+                    "browser_download_url": "https://example.com/old.zip",
+                },
+            ],
+        },
+        {
+            "tag_name": "modpacks",
+            "name": "Modpacks",
+            "assets": [
+                {
+                    "name": "index.json",
+                    "browser_download_url": "https://example.com/modpacks-index.json",
+                },
+                {
+                    "name": "good.zip",
+                    "browser_download_url": "https://example.com/good.zip",
+                },
+            ],
+        },
+    ]
+
+    def fake_http(url, timeout=30, accept="*/*"):
+        if "api.github.com" in url:
+            return json.dumps(releases).encode("utf-8")
+        if url.endswith("modpacks-index.json"):
+            return json.dumps(
+                {
+                    "modpacks": [
+                        {
+                            "id": "good",
+                            "name": "Good",
+                            "version": "1.0.0",
+                            "mc_version": "1.21.1",
+                            "loader": "neoforge",
+                            "download_url": "good.zip",
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+        if url.endswith("old-index.json"):
+            return json.dumps(
+                {
+                    "modpacks": [
+                        {
+                            "id": "old",
+                            "name": "Old",
+                            "version": "1.0.0",
+                            "mc_version": "1.18.2",
+                            "loader": "forge",
+                            "download_url": "old.zip",
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+        raise AssertionError(url)
+
+    monkeypatch.setattr(mp, "_http_get", fake_http)
+    packs = mp.fetch_github_releases_catalog("owner", "repo")
+    assert len(packs) == 1
+    assert packs[0].id == "good"
+
+
+def test_publish_targets_modpacks_release(tmp_path, monkeypatch):
+    import launcher.core.github_publish as gh
+    from launcher.config import LauncherConfig
+
+    mc = tmp_path / "minecraft"
+    (mc / "mods").mkdir(parents=True)
+    (mc / "mods" / "x.jar").write_bytes(b"jar")
+
+    calls: list[tuple] = []
+
+    def fake_req(method, path, token, *, data=None, content_type="application/json", timeout=60):
+        calls.append((method.upper(), path, data if not isinstance(data, (bytes, bytearray)) else f"<{len(data)} bytes>"))
+        if method.upper() == "GET" and path.endswith("/releases/tags/modpacks"):
+            raise gh.GitHubError("GitHub HTTP 404: missing")
+        if method.upper() == "POST" and path.endswith("/releases") and not path.endswith("/assets"):
+            return {
+                "id": 42,
+                "tag_name": "modpacks",
+                "name": "Modpacks",
+                "html_url": "https://github.com/o/r/releases/tag/modpacks",
+                "upload_url": "https://uploads.github.com/repos/o/r/releases/42/assets{?name,label}",
+                "assets": [],
+            }
+        if method.upper() == "POST" and "uploads.github.com" in path:
+            return {"id": 1, "name": "ok"}
+        if method.upper() == "PATCH":
+            return {"id": 42, "html_url": "https://github.com/o/r/releases/tag/modpacks"}
+        return None
+
+    monkeypatch.setattr(gh, "_gh_request", fake_req)
+    monkeypatch.setattr(gh, "cache_dir", lambda: tmp_path / "cache")
+
+    cfg = LauncherConfig(github_token="tok", github_publish_repo="o/r")
+    # avoid writing real config
+    monkeypatch.setattr(cfg, "save", lambda: None)
+
+    info = gh.publish_modpack_release(
+        cfg,
+        instance_minecraft=mc,
+        pack_name="Demo",
+        pack_id="demo",
+        version="1.0.0",
+        mc_version="1.21.1",
+        loader="neoforge",
+        loader_version="21.1.77",
+    )
+    assert info["tag"] == "modpacks"
+    assert info["catalog"] == "o/r"
+    assert any(c[0] == "POST" and c[1].endswith("/releases") for c in calls)
+    # created with Modpacks name
+    create = next(c for c in calls if c[0] == "POST" and c[1].endswith("/releases"))
+    assert create[2]["tag_name"] == "modpacks"
+    assert create[2]["name"] == "Modpacks"
+
 
 
 def test_search_mods_respects_source_filter(monkeypatch):

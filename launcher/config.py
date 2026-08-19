@@ -10,7 +10,9 @@ from typing import Any, Optional
 MC_VERSION = "1.18.2"
 FORGE_VERSION = "1.18.2-40.3.11"
 FORGE_PROFILE = "1.18.2-forge-40.3.11"
-JVM_RUNTIME = "java-runtime-gamma"
+# Mojang bundled runtimes (see minecraft_launcher_lib.runtime.get_jvm_runtimes).
+JVM_RUNTIME = "java-runtime-gamma"  # Java 17 — MC 1.18–1.20.x
+JVM_RUNTIME_JAVA21 = "java-runtime-delta"  # Java 21 — MC 1.21+
 
 # Azure public client that accepts personal Microsoft accounts (consumers).
 # Override via launcher_config.json → azure_client_id if you register your own app.
