@@ -26,7 +26,8 @@ from launcher.core.pack_import import install_from_url, parse_pack_url
 from launcher.core.mods import list_bundled_mods, list_instance_mods, sync_mods
 from launcher.core.progress import ProgressState, ProgressTracker
 from launcher.core.cache_cleanup import cleanup_cache
-from launcher.core.mod_library import create_custom_modpack, search_mods
+from launcher.core.mod_library import create_custom_modpack, search_mods, selected_from_local_jar
+from launcher.core.github_publish import publish_modpack_release, validate_github_token
 
 __all__ = [
     "CancelledError",
@@ -53,10 +54,13 @@ __all__ = [
     "parse_pack_url",
     "prepare_and_launch",
     "prepare_game",
+    "publish_modpack_release",
     "reinstall_game",
     "resolve_java",
     "search_mods",
+    "selected_from_local_jar",
     "sync_mods",
     "uninstall_game",
+    "validate_github_token",
     "verify_modpack_files",
 ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +61,8 @@ class SelectedMod:
     version_id: str = ""
     file_name: str = ""
     download_urls: list[str] = field(default_factory=list)
+    local_path: str = ""  # absolute path for custom .jar
+
 
 
 def _http_json(url: str, timeout: int = 30) -> Any:
@@ -93,15 +96,15 @@ def search_modrinth_mods(
         [f"versions:{mc_version}"],
         [f"categories:{loader}"],
     ]
-    params = urlencode(
-        {
-            "query": (query or "").strip() or " ",
-            "limit": str(max(1, min(limit, 40))),
-            "index": "relevance",
-            "facets": json.dumps(facets, separators=(",", ":")),
-        }
-    )
-    data = _http_json(f"{MODRINTH_API}/search?{params}")
+    q = (query or "").strip()
+    params = {
+        "limit": str(max(1, min(limit, 40))),
+        "index": "downloads" if not q else "relevance",
+        "facets": json.dumps(facets, separators=(",", ":")),
+    }
+    if q:
+        params["query"] = q
+    data = _http_json(f"{MODRINTH_API}/search?{urlencode(params)}")
     hits = data.get("hits") if isinstance(data, dict) else None
     out: list[LibraryMod] = []
     for hit in hits or []:
@@ -133,12 +136,15 @@ def search_curseforge_mods(
     params = {
         "gameId": "432",
         "classId": "6",  # Mods
-        "searchFilter": (query or "").strip(),
         "gameVersion": mc_version,
         "pageSize": str(max(1, min(limit, 40))),
-        "sortField": "2",  # Popularity
+        "sortField": "6",  # TotalDownloads
         "sortOrder": "desc",
     }
+    q = (query or "").strip()
+    if q:
+        params["searchFilter"] = q
+        params["sortField"] = "2"  # Popularity when searching by name
     lt = _CF_LOADER_TYPE.get(loader)
     if lt:
         params["modLoaderType"] = str(lt)
@@ -175,43 +181,64 @@ def search_mods(
     sources: Optional[list[str]] = None,
     limit: int = 16,
 ) -> list[LibraryMod]:
-    """Search Modrinth + CurseForge in parallel and merge (Modrinth first)."""
-    sources = sources or ["modrinth", "curseforge"]
-    results: list[LibraryMod] = []
+    """
+    Search Modrinth + CurseForge.
+
+    Empty query → most downloaded / popular for that MC + loader.
+    Results sorted by download count (desc), with source filters applied.
+    """
+    sources = [s for s in (sources or ["modrinth", "curseforge"]) if s in {"modrinth", "curseforge"}]
+    if not sources:
+        return []
     with ThreadPoolExecutor(max_workers=2) as pool:
         futs = {}
         if "modrinth" in sources:
-            futs[pool.submit(search_modrinth_mods, query, mc_version=mc_version, loader=loader, limit=limit)] = "mr"
+            futs[
+                pool.submit(
+                    search_modrinth_mods, query, mc_version=mc_version, loader=loader, limit=limit
+                )
+            ] = "mr"
         if "curseforge" in sources:
-            futs[pool.submit(search_curseforge_mods, query, mc_version=mc_version, loader=loader, limit=limit)] = "cf"
-        by_src: dict[str, list[LibraryMod]] = {}
+            futs[
+                pool.submit(
+                    search_curseforge_mods, query, mc_version=mc_version, loader=loader, limit=limit
+                )
+            ] = "cf"
+        combined: list[LibraryMod] = []
         for fut in as_completed(futs):
-            key = futs[fut]
             try:
-                by_src[key] = fut.result()
+                combined.extend(fut.result())
             except Exception:
-                by_src[key] = []
-    # Interleave a bit so both catalogs show up
-    mr = by_src.get("mr") or []
-    cf = by_src.get("cf") or []
-    seen: set[str] = set()
-    i = j = 0
-    while i < len(mr) or j < len(cf):
-        if i < len(mr):
-            m = mr[i]
-            i += 1
-            key = f"mr:{m.slug}"
-            if key not in seen:
-                seen.add(key)
-                results.append(m)
-        if j < len(cf):
-            m = cf[j]
-            j += 1
-            key = f"cf:{m.slug}"
-            if key not in seen:
-                seen.add(key)
-                results.append(m)
-    return results[: max(limit * 2, 20)]
+                pass
+    # Dedupe by slug, keep highest downloads
+    best: dict[str, LibraryMod] = {}
+    for m in combined:
+        key = (m.slug or m.project_id or m.name).lower()
+        prev = best.get(key)
+        if prev is None or m.downloads >= prev.downloads:
+            best[key] = m
+    ranked = sorted(best.values(), key=lambda m: (-m.downloads, m.name.lower()))
+    return ranked[: max(limit * 2, 24)]
+
+
+def selected_from_local_jar(path: Path) -> SelectedMod:
+    """Turn a user-picked .jar into a SelectedMod (copied at install time)."""
+    p = Path(path).expanduser().resolve()
+    if not p.is_file() or p.suffix.lower() != ".jar":
+        raise ValueError("Escolha um arquivo .jar válido.")
+    if p.stat().st_size <= 0:
+        raise ValueError("O .jar está vazio.")
+    if p.stat().st_size > 200 * 1024 * 1024:
+        raise ValueError("Arquivo grande demais (máx. 200 MB).")
+    slug = _slug(p.stem) or "custom-jar"
+    return SelectedMod(
+        platform="local",
+        project_id=f"local:{slug}",
+        slug=slug,
+        name=p.stem,
+        file_name=p.name,
+        local_path=str(p),
+    )
 
 
 def resolve_modrinth_mod_file(
@@ -358,13 +385,19 @@ def create_custom_modpack(
     if tracker:
         tracker.set_phase("mods", f"Baixando {len(mods)} mods…")
 
-    # Resolve any that still need URLs
+    # Resolve any that still need URLs / keep local jars
     resolved: list[SelectedMod] = []
     for mod in mods:
         if cancel_event is not None and cancel_event.is_set():
             from launcher.core.installer import CancelledError
 
             raise CancelledError("Cancelado.")
+        if (mod.platform or "") == "local" or (mod.local_path or "").strip():
+            local = Path(mod.local_path).expanduser()
+            if not local.is_file():
+                raise ValueError(f"Jar local sumiu: {mod.name}")
+            resolved.append(mod)
+            continue
         if mod.download_urls:
             resolved.append(mod)
             continue
@@ -383,6 +416,11 @@ def create_custom_modpack(
         if not fname.lower().endswith(".jar"):
             fname = f"{fname}.jar"
         dest = _contained(mc / "mods" / fname, mc)
+        if (mod.platform or "") == "local" or (mod.local_path or "").strip():
+            src = Path(mod.local_path).expanduser().resolve()
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            continue
         urls = [u for u in mod.download_urls if is_trusted_url(u)]
         if not urls:
             raise ValueError(f"Sem download HTTPS para {mod.name}")
@@ -411,6 +449,7 @@ def create_custom_modpack(
             "name": m.name,
             "version_id": m.version_id,
             "file_name": m.file_name,
+            "local": bool(m.local_path),
         }
         for m in resolved
     ]

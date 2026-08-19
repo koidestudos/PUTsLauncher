@@ -121,8 +121,10 @@ Loaders: **Forge**, **Fabric**, **NeoForge**, **Quilt**. O launcher baixa o `.mr
 Em **+ Modpack → Criar meu modpack**:
 
 1. Nome, versão do Minecraft e loader
-2. Busca mods no **Modrinth** e **CurseForge**
-3. Adiciona à lista e cria a instância
+2. Sem busca: lista os **mais baixados**; use os botões **Modrinth / CurseForge** pra filtrar
+3. **+ Meu .jar** pra incluir um jar local
+4. (Opcional) **Conectar GitHub** com um Personal Access Token (`repo`), escolha o repositório e marque publicar Release
+5. Cria a instância — se publicou, o catálogo vira `dono/repo` e outros podem usar o mesmo link em Opções
 
 ## Cache
 

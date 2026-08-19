@@ -116,6 +116,10 @@ class LauncherConfig:
     modpack_catalog: str = ""
     # legacy key from R2 era — migrated on load
     modpack_index_url: str = ""
+    # GitHub publish (Personal Access Token — never commit this file publicly)
+    github_token: str = ""
+    github_login: str = ""
+    github_publish_repo: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod

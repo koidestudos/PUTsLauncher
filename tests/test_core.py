@@ -1548,3 +1548,93 @@ def test_parallel_download_jobs_retries_and_completes(tmp_path, monkeypatch):
     assert (tmp_path / "b.jar").read_bytes() == b"b.jar"
     assert (tmp_path / "c.jar").read_bytes() == b"c.jar"
     assert attempts["b.jar"] >= 2
+
+
+def test_selected_from_local_jar_and_custom_install(tmp_path, monkeypatch):
+    import launcher.core.instances as instances
+    from launcher.core.mod_library import create_custom_modpack, selected_from_local_jar
+
+    _isolate_home(tmp_path, monkeypatch)
+    monkeypatch.setattr("launcher.core.skins_mod.ensure_elyby_skins_mod", lambda *a, **k: None)
+
+    jar = tmp_path / "MeuMod.jar"
+    jar.write_bytes(b"custom-jar-bytes")
+    sel = selected_from_local_jar(jar)
+    assert sel.platform == "local"
+    assert sel.file_name == "MeuMod.jar"
+
+    with pytest.raises(ValueError):
+        selected_from_local_jar(tmp_path / "nope.txt")
+
+    inst = create_custom_modpack(
+        name="Custom Local",
+        mc_version="1.20.1",
+        loader="forge",
+        mods=[sel],
+    )
+    assert (inst.minecraft_path / "mods" / "MeuMod.jar").read_bytes() == b"custom-jar-bytes"
+    assert inst.source == "custom"
+
+
+def test_build_modpack_zip_for_github(tmp_path, monkeypatch):
+    from launcher.core.github_publish import build_modpack_zip
+
+    mc = tmp_path / "minecraft"
+    mods = mc / "mods"
+    mods.mkdir(parents=True)
+    (mods / "a.jar").write_bytes(b"aaa")
+    (mods / "b.jar").write_bytes(b"bbb")
+    dest = tmp_path / "out.zip"
+    build_modpack_zip(
+        instance_minecraft=mc,
+        pack_name="Demo",
+        pack_id="demo",
+        version="1.0.0",
+        mc_version="1.20.1",
+        loader="forge",
+        loader_version="1.20.1-47.2.0",
+        dest_zip=dest,
+    )
+    assert dest.is_file() and dest.stat().st_size > 0
+    import zipfile
+
+    with zipfile.ZipFile(dest) as zf:
+        names = zf.namelist()
+        assert "mods/a.jar" in names
+        assert "mods/b.jar" in names
+        assert "pack.meta.json" in names
+
+
+def test_search_mods_respects_source_filter(monkeypatch):
+    from launcher.core import mod_library as lib
+
+    def fake_mr(query, *, mc_version, loader, limit=20):
+        return [
+            lib.LibraryMod(
+                platform="modrinth",
+                project_id="1",
+                slug="sodium",
+                name="Sodium",
+                downloads=1000,
+            )
+        ]
+
+    def fake_cf(query, *, mc_version, loader, limit=20):
+        return [
+            lib.LibraryMod(
+                platform="curseforge",
+                project_id="2",
+                slug="jei",
+                name="JEI",
+                downloads=5000,
+            )
+        ]
+
+    monkeypatch.setattr(lib, "search_modrinth_mods", fake_mr)
+    monkeypatch.setattr(lib, "search_curseforge_mods", fake_cf)
+
+    both = lib.search_mods("", mc_version="1.20.1", loader="forge", sources=["modrinth", "curseforge"])
+    assert [m.slug for m in both] == ["jei", "sodium"]  # downloads desc
+
+    only_mr = lib.search_mods("x", mc_version="1.20.1", loader="forge", sources=["modrinth"])
+    assert len(only_mr) == 1 and only_mr[0].platform == "modrinth"

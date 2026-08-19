@@ -66,6 +66,16 @@ from launcher.core.mod_library import (
     create_custom_modpack,
     resolve_library_mod,
     search_mods,
+    selected_from_local_jar,
+)
+from launcher.core.github_publish import (
+    GitHubError,
+    clear_github_session,
+    create_repo,
+    list_user_repos,
+    publish_modpack_release,
+    save_github_session,
+    validate_github_token,
 )
 from launcher.core.system import MIN_RAM_GB, clamp_ram_gb, max_ram_gb, total_ram_gb
 from launcher.ui.skin3d import Skin3DViewer
@@ -674,6 +684,7 @@ class PUTsLauncherApp(ctk.CTk):
             "java": "Baixando Java",
             "forge": "Baixando Minecraft + loader",
             "mods": "Mods do pack",
+            "publish": "Publicando no GitHub",
             "launch": "Abrindo o jogo",
         }
         self.progress_title.configure(text=titles.get(state.phase, state.phase.capitalize() or "Baixando"))
@@ -1102,22 +1113,22 @@ class PUTsLauncherApp(ctk.CTk):
 
         win = ctk.CTkToplevel(self)
         win.title("Criar modpack")
-        win.geometry("640x720")
-        win.minsize(560, 600)
+        win.geometry("720x780")
+        win.minsize(620, 640)
         win.configure(fg_color=COLORS["bg1"])
         win.transient(self)
 
         head = ctk.CTkFrame(win, fg_color="transparent")
-        head.pack(fill="x", padx=20, pady=(18, 6))
+        head.pack(fill="x", padx=20, pady=(18, 4))
         ctk.CTkLabel(head, text="Criar modpack", font=FONTS["title"], text_color=COLORS["accent"]).pack(
             anchor="w"
         )
         ctk.CTkLabel(
             head,
-            text="Escolha Minecraft + loader e monte a lista com mods do Modrinth e CurseForge.",
+            text="Mods populares, filtros CurseForge/Modrinth, .jar próprio e publicação no GitHub Releases.",
             font=FONTS["small"],
             text_color=COLORS["muted"],
-            wraplength=580,
+            wraplength=660,
             justify="left",
             anchor="w",
         ).pack(anchor="w", pady=(4, 0))
@@ -1125,17 +1136,26 @@ class PUTsLauncherApp(ctk.CTk):
         form = ctk.CTkFrame(win, fg_color=COLORS["panel"], corner_radius=14)
         form.pack(fill="x", padx=16, pady=8)
         name_var = ctk.StringVar(value="Meu Pack")
+        version_var = ctk.StringVar(value="1.0.0")
         mc_var = ctk.StringVar(value="1.20.1")
         loader_var = ctk.StringVar(value="Forge")
         query_var = ctk.StringVar()
+        src_mr = ctk.BooleanVar(value=True)
+        src_cf = ctk.BooleanVar(value=True)
 
         row1 = ctk.CTkFrame(form, fg_color="transparent")
         row1.pack(fill="x", padx=14, pady=(12, 6))
-        ctk.CTkLabel(row1, text="Nome", font=FONTS["tiny"], text_color=COLORS["muted"]).pack(anchor="w")
-        ctk.CTkEntry(row1, textvariable=name_var, height=34, corner_radius=10).pack(fill="x", pady=(2, 0))
+        name_col = ctk.CTkFrame(row1, fg_color="transparent")
+        name_col.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        ver_col = ctk.CTkFrame(row1, fg_color="transparent")
+        ver_col.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        ctk.CTkLabel(name_col, text="Nome", font=FONTS["tiny"], text_color=COLORS["muted"]).pack(anchor="w")
+        ctk.CTkEntry(name_col, textvariable=name_var, height=34, corner_radius=10).pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(ver_col, text="Versão do pack", font=FONTS["tiny"], text_color=COLORS["muted"]).pack(anchor="w")
+        ctk.CTkEntry(ver_col, textvariable=version_var, height=34, corner_radius=10).pack(fill="x", pady=(2, 0))
 
         row2 = ctk.CTkFrame(form, fg_color="transparent")
-        row2.pack(fill="x", padx=14, pady=(0, 10))
+        row2.pack(fill="x", padx=14, pady=(0, 8))
         left = ctk.CTkFrame(row2, fg_color="transparent")
         left.pack(side="left", fill="x", expand=True, padx=(0, 6))
         right = ctk.CTkFrame(row2, fg_color="transparent")
@@ -1150,6 +1170,7 @@ class PUTsLauncherApp(ctk.CTk):
             fg_color=COLORS["bg1"],
             button_color=COLORS["stroke"],
             button_hover_color=COLORS["accent"],
+            command=lambda _v: do_search(),
         ).pack(fill="x", pady=(2, 0))
         ctk.CTkLabel(right, text="Loader", font=FONTS["tiny"], text_color=COLORS["muted"]).pack(anchor="w")
         ctk.CTkOptionMenu(
@@ -1161,24 +1182,78 @@ class PUTsLauncherApp(ctk.CTk):
             fg_color=COLORS["bg1"],
             button_color=COLORS["stroke"],
             button_hover_color=COLORS["accent"],
+            command=lambda _v: do_search(),
         ).pack(fill="x", pady=(2, 0))
 
+        filt = ctk.CTkFrame(form, fg_color="transparent")
+        filt.pack(fill="x", padx=14, pady=(0, 6))
+        ctk.CTkLabel(filt, text="Fontes", font=FONTS["tiny"], text_color=COLORS["muted"]).pack(side="left", padx=(0, 8))
+
+        def _toggle_style(btn, on: bool):
+            if on:
+                btn.configure(fg_color=COLORS["accent"], text_color=COLORS["accent_text"], hover_color=COLORS["accent_hot"])
+            else:
+                btn.configure(fg_color="transparent", text_color=COLORS["muted"], hover_color=COLORS["stroke"])
+
+        def make_source_btn(label: str, var: ctk.BooleanVar):
+            btn = ctk.CTkButton(
+                filt,
+                text=label,
+                width=110,
+                height=30,
+                corner_radius=8,
+                font=FONTS["tiny"],
+                border_width=1,
+                border_color=COLORS["stroke"],
+            )
+
+            def flip():
+                var.set(not var.get())
+                if not src_mr.get() and not src_cf.get():
+                    var.set(True)
+                _toggle_style(btn, var.get())
+                do_search()
+
+            btn.configure(command=flip)
+            _toggle_style(btn, var.get())
+            btn.pack(side="left", padx=(0, 6))
+            return btn
+
+        make_source_btn("Modrinth", src_mr)
+        make_source_btn("CurseForge", src_cf)
+
         search_row = ctk.CTkFrame(form, fg_color="transparent")
-        search_row.pack(fill="x", padx=14, pady=(0, 12))
-        ctk.CTkEntry(
+        search_row.pack(fill="x", padx=14, pady=(0, 8))
+        entry = ctk.CTkEntry(
             search_row,
             textvariable=query_var,
             height=34,
             corner_radius=10,
-            placeholder_text="Buscar mods (ex.: JEI, Sodium, Create)…",
-        ).pack(side="left", fill="x", expand=True, padx=(0, 8))
+            placeholder_text="Buscar… (vazio = mais baixados)",
+        )
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        jar_row = ctk.CTkFrame(form, fg_color="transparent")
+        jar_row.pack(fill="x", padx=14, pady=(0, 12))
+
+        gh_row = ctk.CTkFrame(form, fg_color="transparent")
+        gh_row.pack(fill="x", padx=14, pady=(0, 12))
+        gh_status = ctk.CTkLabel(
+            gh_row,
+            text="",
+            font=FONTS["tiny"],
+            text_color=COLORS["muted"],
+            anchor="w",
+        )
+        gh_status.pack(side="left", fill="x", expand=True)
 
         selected: list[SelectedMod] = []
         selected_keys: set[str] = set()
+        publish_after = ctk.BooleanVar(value=bool((self.cfg.github_token or "").strip()))
 
         body = ctk.CTkFrame(win, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=16, pady=(0, 8))
-        results_frame = ctk.CTkScrollableFrame(body, fg_color="transparent", label_text="Resultados")
+        results_frame = ctk.CTkScrollableFrame(body, fg_color="transparent", label_text="Mods")
         results_frame.pack(side="left", fill="both", expand=True, padx=(0, 6))
         picked_frame = ctk.CTkScrollableFrame(body, fg_color="transparent", label_text="No pack")
         picked_frame.pack(side="left", fill="both", expand=True, padx=(6, 0))
@@ -1188,6 +1263,26 @@ class PUTsLauncherApp(ctk.CTk):
 
         def loader_key() -> str:
             return (loader_var.get() or "forge").strip().lower()
+
+        def active_sources() -> list[str]:
+            out = []
+            if src_mr.get():
+                out.append("modrinth")
+            if src_cf.get():
+                out.append("curseforge")
+            return out or ["modrinth", "curseforge"]
+
+        def refresh_gh_status():
+            login = (self.cfg.github_login or "").strip()
+            repo = (self.cfg.github_publish_repo or "").strip()
+            if (self.cfg.github_token or "").strip() and login:
+                extra = f" · repo {repo}" if repo else ""
+                gh_status.configure(text=f"GitHub: @{login}{extra}", text_color=COLORS["ok"])
+            else:
+                gh_status.configure(
+                    text="GitHub desconectado — conecte para publicar Release e compartilhar o link.",
+                    text_color=COLORS["muted"],
+                )
 
         def redraw_picked():
             for child in picked_frame.winfo_children():
@@ -1256,6 +1351,26 @@ class PUTsLauncherApp(ctk.CTk):
 
             self._run_bg(job, done, busy_text=None)
 
+        def add_local_jar():
+            paths = filedialog.askopenfilenames(
+                parent=win,
+                title="Escolher .jar custom",
+                filetypes=[("Minecraft mods", "*.jar"), ("Todos", "*.*")],
+            )
+            for raw in paths or []:
+                try:
+                    sel = selected_from_local_jar(Path(raw))
+                except ValueError as exc:
+                    messagebox.showerror("Jar custom", str(exc), parent=win)
+                    continue
+                key = f"{sel.platform}:{sel.project_id}"
+                if key in selected_keys:
+                    continue
+                selected.append(sel)
+                selected_keys.add(key)
+            redraw_picked()
+            status.configure(text=f"{len(selected)} item(ns) no pack")
+
         def render_results(mods: list[LibraryMod], err=None):
             for child in results_frame.winfo_children():
                 child.destroy()
@@ -1265,7 +1380,9 @@ class PUTsLauncherApp(ctk.CTk):
                     anchor="w", padx=6, pady=6
                 )
                 return
-            status.configure(text=f"{len(mods)} resultado(s)")
+            q = (query_var.get() or "").strip()
+            label = "mais baixados" if not q else "resultados"
+            status.configure(text=f"{len(mods)} {label}")
             if not mods:
                 ctk.CTkLabel(results_frame, text="Nada encontrado.", text_color=COLORS["muted"]).pack(
                     anchor="w", padx=6, pady=6
@@ -1274,6 +1391,7 @@ class PUTsLauncherApp(ctk.CTk):
             for lib in mods:
                 card = ctk.CTkFrame(results_frame, fg_color=COLORS["panel"], corner_radius=10)
                 card.pack(fill="x", pady=4)
+                dl = f"{lib.downloads:,}".replace(",", ".") if lib.downloads else ""
                 ctk.CTkLabel(
                     card,
                     text=lib.name,
@@ -1283,12 +1401,13 @@ class PUTsLauncherApp(ctk.CTk):
                 ).pack(fill="x", padx=10, pady=(8, 0))
                 ctk.CTkLabel(
                     card,
-                    text=f"{lib.platform} · {lib.slug}"
+                    text=f"{lib.platform}"
+                    + (f" · {dl} downloads" if dl else "")
                     + (f" · {lib.description}" if lib.description else ""),
                     font=FONTS["tiny"],
                     text_color=COLORS["muted"],
                     anchor="w",
-                    wraplength=260,
+                    wraplength=280,
                     justify="left",
                 ).pack(fill="x", padx=10, pady=(2, 0))
                 ctk.CTkButton(
@@ -1303,13 +1422,17 @@ class PUTsLauncherApp(ctk.CTk):
                     command=lambda m=lib: add_mod(m),
                 ).pack(fill="x", padx=10, pady=(6, 8))
 
-        def do_search():
+        def do_search(_event=None):
             q = (query_var.get() or "").strip()
-            status.configure(text="Buscando…")
+            status.configure(text="Carregando populares…" if not q else "Buscando…")
 
             def job():
                 return search_mods(
-                    q, mc_version=mc_var.get().strip(), loader=loader_key(), limit=12
+                    q,
+                    mc_version=mc_var.get().strip(),
+                    loader=loader_key(),
+                    sources=active_sources(),
+                    limit=14,
                 )
 
             def done(mods, err):
@@ -1329,21 +1452,104 @@ class PUTsLauncherApp(ctk.CTk):
             text_color=COLORS["accent_text"],
             command=do_search,
         ).pack(side="left")
+        entry.bind("<Return>", do_search)
+
+        ctk.CTkButton(
+            jar_row,
+            text="+ Meu .jar",
+            height=32,
+            corner_radius=10,
+            font=FONTS["small"],
+            fg_color="transparent",
+            hover_color=COLORS["stroke"],
+            text_color=COLORS["muted"],
+            border_width=1,
+            border_color=COLORS["stroke"],
+            command=add_local_jar,
+        ).pack(side="left")
+        ctk.CTkLabel(
+            jar_row,
+            text="Adiciona um jar local ao pack (não precisa estar no CurseForge/Modrinth).",
+            font=FONTS["tiny"],
+            text_color=COLORS["muted"],
+        ).pack(side="left", padx=(10, 0))
+
+        def connect_github():
+            self._open_github_connect(parent=win, on_done=lambda: (refresh_gh_status(), publish_after.set(True)))
+
+        def pick_repo():
+            if not (self.cfg.github_token or "").strip():
+                connect_github()
+                return
+            self._open_github_repo_picker(parent=win, on_done=refresh_gh_status)
+
+        ctk.CTkButton(
+            gh_row,
+            text="Conectar GitHub",
+            width=130,
+            height=30,
+            corner_radius=8,
+            font=FONTS["tiny"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hot"],
+            text_color=COLORS["accent_text"],
+            command=connect_github,
+        ).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(
+            gh_row,
+            text="Repo…",
+            width=70,
+            height=30,
+            corner_radius=8,
+            font=FONTS["tiny"],
+            fg_color="transparent",
+            hover_color=COLORS["stroke"],
+            text_color=COLORS["muted"],
+            border_width=1,
+            border_color=COLORS["stroke"],
+            command=pick_repo,
+        ).pack(side="right")
 
         foot = ctk.CTkFrame(win, fg_color="transparent")
         foot.pack(fill="x", padx=16, pady=(4, 16))
+        ctk.CTkCheckBox(
+            foot,
+            text="Depois de criar, publicar Release no GitHub (zip + index.json) e usar como catálogo",
+            variable=publish_after,
+            font=FONTS["tiny"],
+            text_color=COLORS["muted"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hot"],
+        ).pack(anchor="w", pady=(0, 8))
 
         def do_create():
             if not selected:
-                messagebox.showinfo("Criar pack", "Adicione pelo menos um mod.", parent=win)
+                messagebox.showinfo("Criar pack", "Adicione pelo menos um mod ou .jar.", parent=win)
+                return
+            if publish_after.get() and not (self.cfg.github_token or "").strip():
+                messagebox.showinfo(
+                    "GitHub",
+                    "Conecte o GitHub antes de publicar, ou desmarque a opção de Release.",
+                    parent=win,
+                )
+                return
+            if publish_after.get() and not (self.cfg.github_publish_repo or "").strip():
+                messagebox.showinfo(
+                    "GitHub",
+                    "Escolha o repositório (botão Repo…) onde o Release vai ficar.",
+                    parent=win,
+                )
                 return
             nm = (name_var.get() or "").strip() or "Meu Pack"
+            ver = (version_var.get() or "").strip() or "1.0.0"
             win.destroy()
             self._install_custom_modpack(
                 name=nm,
+                version=ver,
                 mc_version=mc_var.get().strip(),
                 loader=loader_key(),
                 mods=list(selected),
+                publish=bool(publish_after.get()),
             )
 
         ctk.CTkButton(
@@ -1357,16 +1563,230 @@ class PUTsLauncherApp(ctk.CTk):
             text_color=COLORS["accent_text"],
             command=do_create,
         ).pack(fill="x")
+        refresh_gh_status()
         redraw_picked()
+        do_search()
 
-    def _install_custom_modpack(self, *, name: str, mc_version: str, loader: str, mods: list) -> None:
+    def _open_github_connect(self, parent=None, on_done=None) -> None:
+        dlg = ctk.CTkToplevel(parent or self)
+        dlg.title("Conectar GitHub")
+        dlg.geometry("520x360")
+        dlg.minsize(460, 320)
+        dlg.configure(fg_color=COLORS["bg1"])
+        dlg.transient(parent or self)
+
+        box = ctk.CTkFrame(dlg, fg_color="transparent")
+        box.pack(fill="both", expand=True, padx=20, pady=18)
+        ctk.CTkLabel(box, text="GitHub", font=FONTS["title"], text_color=COLORS["accent"]).pack(anchor="w")
+        ctk.CTkLabel(
+            box,
+            text=(
+                "Cole um Personal Access Token com permissão de repo "
+                "(classic: scope repo, ou fine-grained: Contents + Metadata no repositório)."
+            ),
+            font=FONTS["small"],
+            text_color=COLORS["muted"],
+            wraplength=460,
+            justify="left",
+            anchor="w",
+        ).pack(anchor="w", pady=(6, 10))
+        token_var = ctk.StringVar(value=self.cfg.github_token or "")
+        ctk.CTkEntry(box, textvariable=token_var, height=36, corner_radius=10, show="•").pack(fill="x")
+        hint = ctk.CTkLabel(box, text="", font=FONTS["tiny"], text_color=COLORS["muted"])
+        hint.pack(anchor="w", pady=(8, 0))
+
+        def open_token_page():
+            import webbrowser
+
+            webbrowser.open("https://github.com/settings/tokens/new?scopes=repo&description=PUTsLauncher")
+
+        def save_token():
+            raw = (token_var.get() or "").strip()
+
+            def job():
+                return validate_github_token(raw)
+
+            def done(user, err):
+                if err:
+                    messagebox.showerror("GitHub", str(err), parent=dlg)
+                    return
+                save_github_session(self.cfg, raw, user, self.cfg.github_publish_repo or "")
+                self.cfg = LauncherConfig.load()
+                hint.configure(text=f"Conectado como @{user.login}", text_color=COLORS["ok"])
+                if on_done:
+                    on_done()
+                dlg.after(400, dlg.destroy)
+
+            self._run_bg(job, done, busy_text=None)
+
+        def disconnect():
+            clear_github_session(self.cfg)
+            self.cfg = LauncherConfig.load()
+            token_var.set("")
+            hint.configure(text="Desconectado.", text_color=COLORS["muted"])
+            if on_done:
+                on_done()
+
+        btns = ctk.CTkFrame(box, fg_color="transparent")
+        btns.pack(fill="x", pady=(16, 0))
+        ctk.CTkButton(
+            btns,
+            text="Criar token no GitHub",
+            height=34,
+            corner_radius=10,
+            font=FONTS["small"],
+            fg_color="transparent",
+            hover_color=COLORS["stroke"],
+            text_color=COLORS["muted"],
+            border_width=1,
+            border_color=COLORS["stroke"],
+            command=open_token_page,
+        ).pack(side="left")
+        ctk.CTkButton(
+            btns,
+            text="Desconectar",
+            height=34,
+            corner_radius=10,
+            font=FONTS["small"],
+            fg_color="transparent",
+            hover_color=COLORS["stroke"],
+            text_color=COLORS["muted"],
+            command=disconnect,
+        ).pack(side="left", padx=(8, 0))
+        ctk.CTkButton(
+            btns,
+            text="Salvar",
+            height=34,
+            corner_radius=10,
+            font=FONTS["body_bold"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hot"],
+            text_color=COLORS["accent_text"],
+            command=save_token,
+        ).pack(side="right")
+
+    def _open_github_repo_picker(self, parent=None, on_done=None) -> None:
+        token = (self.cfg.github_token or "").strip()
+        if not token:
+            messagebox.showinfo("GitHub", "Conecte o GitHub primeiro.")
+            return
+        dlg = ctk.CTkToplevel(parent or self)
+        dlg.title("Repositório de modpacks")
+        dlg.geometry("480x520")
+        dlg.minsize(420, 420)
+        dlg.configure(fg_color=COLORS["bg1"])
+        dlg.transient(parent or self)
+
+        head = ctk.CTkFrame(dlg, fg_color="transparent")
+        head.pack(fill="x", padx=18, pady=(16, 6))
+        ctk.CTkLabel(head, text="Escolher repositório", font=FONTS["title"], text_color=COLORS["accent"]).pack(
+            anchor="w"
+        )
+        status = ctk.CTkLabel(head, text="Carregando…", font=FONTS["small"], text_color=COLORS["muted"])
+        status.pack(anchor="w", pady=(4, 0))
+        scroll = ctk.CTkScrollableFrame(dlg, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=14, pady=8)
+
+        def pick(full_name: str):
+            self.cfg.github_publish_repo = full_name
+            self.cfg.save()
+            self.cfg = LauncherConfig.load()
+            if on_done:
+                on_done()
+            dlg.destroy()
+
+        def render(repos, err=None):
+            for child in scroll.winfo_children():
+                child.destroy()
+            if err:
+                status.configure(text=str(err), text_color=COLORS["danger"])
+                return
+            status.configure(text=f"{len(repos)} repositório(s)", text_color=COLORS["muted"])
+            current = (self.cfg.github_publish_repo or "").strip()
+            for repo in repos:
+                card = ctk.CTkFrame(scroll, fg_color=COLORS["panel"], corner_radius=10)
+                card.pack(fill="x", pady=4)
+                mark = "  ✓" if repo.full_name == current else ""
+                ctk.CTkLabel(
+                    card,
+                    text=f"{repo.full_name}{mark}",
+                    font=FONTS["body_bold"],
+                    text_color=COLORS["text"],
+                    anchor="w",
+                ).pack(fill="x", padx=12, pady=(10, 0))
+                ctk.CTkLabel(
+                    card,
+                    text=("privado" if repo.private else "público") + f" · {repo.default_branch}",
+                    font=FONTS["tiny"],
+                    text_color=COLORS["muted"],
+                    anchor="w",
+                ).pack(fill="x", padx=12)
+                ctk.CTkButton(
+                    card,
+                    text="Usar este",
+                    height=30,
+                    corner_radius=8,
+                    font=FONTS["tiny"],
+                    fg_color=COLORS["accent"],
+                    hover_color=COLORS["accent_hot"],
+                    text_color=COLORS["accent_text"],
+                    command=lambda n=repo.full_name: pick(n),
+                ).pack(fill="x", padx=12, pady=(6, 10))
+
+        def create_new():
+            name = "puts-modpacks"
+
+            def job():
+                return create_repo(token, name, private=False)
+
+            def done(repo, err):
+                if err:
+                    messagebox.showerror("GitHub", str(err), parent=dlg)
+                    return
+                pick(repo.full_name)
+
+            self._run_bg(job, done, busy_text=None)
+
+        def job():
+            return list_user_repos(token)
+
+        def done(repos, err):
+            render(repos or [], err)
+
+        foot = ctk.CTkFrame(dlg, fg_color="transparent")
+        foot.pack(fill="x", padx=14, pady=(0, 14))
+        ctk.CTkButton(
+            foot,
+            text="Criar puts-modpacks",
+            height=34,
+            corner_radius=10,
+            font=FONTS["small"],
+            fg_color="transparent",
+            hover_color=COLORS["stroke"],
+            text_color=COLORS["muted"],
+            border_width=1,
+            border_color=COLORS["stroke"],
+            command=create_new,
+        ).pack(fill="x")
+        self._run_bg(job, done, busy_text=None)
+
+    def _install_custom_modpack(
+        self,
+        *,
+        name: str,
+        mc_version: str,
+        loader: str,
+        mods: list,
+        version: str = "1.0.0",
+        publish: bool = False,
+    ) -> None:
         self._cancel.clear()
         self._show_progress(True)
         self.progress_title.configure(text="Criar pack")
         self.detail_label.configure(text=f"Montando {name}…")
 
         def job():
-            tracker = ProgressTracker({"mods": 0.55, "java": 0.2, "forge": 0.25})
+            tracker = ProgressTracker({"mods": 0.5, "java": 0.2, "forge": 0.2, "publish": 0.1})
             tracker.on_update = lambda s: self.after(0, lambda: self._set_progress_ui(s))
             inst = create_custom_modpack(
                 name=name,
@@ -1376,14 +1796,33 @@ class PUTsLauncherApp(ctk.CTk):
                 tracker=tracker,
                 cancel_event=self._cancel,
             )
+            inst.modpack_version = version or "1.0.0"
+            inst.save_meta()
             activate_instance(inst.id)
             apply_instance_to_config(self.cfg, inst)
             self.cfg = LauncherConfig.load()
             prepare_game(self.cfg, tracker=tracker, cancel_event=self._cancel)
             sync_mods(tracker=tracker)
-            return inst
+            publish_info = None
+            if publish:
+                if tracker:
+                    tracker.set_phase("publish", "Publicando Release no GitHub…")
+                publish_info = publish_modpack_release(
+                    self.cfg,
+                    instance_minecraft=inst.minecraft_path,
+                    pack_name=inst.name,
+                    pack_id=inst.modpack_id or inst.id,
+                    version=inst.modpack_version or version or "1.0.0",
+                    mc_version=inst.mc_version,
+                    loader=getattr(inst, "loader", None) or loader,
+                    loader_version=inst.forge_version,
+                    set_as_catalog=True,
+                )
+                if tracker:
+                    tracker.complete_phase("Release publicado")
+            return inst, publish_info
 
-        def done(inst, err):
+        def done(result, err):
             self._show_progress(False)
             if isinstance(err, CancelledError) or self._cancel.is_set():
                 self.detail_label.configure(text="Criação cancelada.")
@@ -1393,10 +1832,18 @@ class PUTsLauncherApp(ctk.CTk):
             if err:
                 messagebox.showerror("Criar modpack", str(err))
                 return
+            inst, publish_info = result
             self.cfg = LauncherConfig.load()
             self._refresh_instance_menu()
             self._refresh_ready_state()
-            messagebox.showinfo("Criar modpack", f"Instância pronta: {inst.name}")
+            msg = f"Instância pronta: {inst.name}"
+            if publish_info:
+                msg += (
+                    f"\n\nCatálogo: {publish_info.get('catalog')}\n"
+                    f"Release: {publish_info.get('release_url')}\n\n"
+                    f"{publish_info.get('share_hint')}"
+                )
+            messagebox.showinfo("Criar modpack", msg)
 
         self._run_bg(job, done, busy_text="PACK…")
 
@@ -2104,6 +2551,80 @@ class PUTsLauncherApp(ctk.CTk):
             justify="left",
         ).pack(anchor="w", pady=(4, 0))
 
+        ctk.CTkLabel(scroll, text="GitHub (publicar packs)", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(
+            anchor="w", pady=(14, 4)
+        )
+        gh_line = ctk.CTkFrame(scroll, fg_color="transparent")
+        gh_line.pack(fill="x")
+        gh_label = ctk.CTkLabel(
+            gh_line,
+            text=(
+                f"Conectado: @{self.cfg.github_login}"
+                if (self.cfg.github_token and self.cfg.github_login)
+                else "Desconectado"
+            ),
+            font=FONTS["small"],
+            text_color=COLORS["ok"] if self.cfg.github_token else COLORS["muted"],
+            anchor="w",
+        )
+        gh_label.pack(side="left", fill="x", expand=True)
+        repo_var = ctk.StringVar(value=self.cfg.github_publish_repo or "")
+
+        def refresh_gh_opts():
+            self.cfg = LauncherConfig.load()
+            gh_label.configure(
+                text=(
+                    f"Conectado: @{self.cfg.github_login}"
+                    if (self.cfg.github_token and self.cfg.github_login)
+                    else "Desconectado"
+                ),
+                text_color=COLORS["ok"] if self.cfg.github_token else COLORS["muted"],
+            )
+            repo_var.set(self.cfg.github_publish_repo or "")
+            idx_var.set(self.cfg.catalog_source())
+
+        ctk.CTkButton(
+            gh_line,
+            text="Conectar…",
+            width=100,
+            height=30,
+            corner_radius=8,
+            font=FONTS["tiny"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hot"],
+            text_color=COLORS["accent_text"],
+            command=lambda: self._open_github_connect(parent=win, on_done=refresh_gh_opts),
+        ).pack(side="right")
+        ctk.CTkEntry(
+            scroll,
+            textvariable=repo_var,
+            placeholder_text="dono/repo para publicar Releases",
+            fg_color=COLORS["input_bg"],
+            border_color=COLORS["input_border"],
+            text_color=COLORS["text"],
+        ).pack(fill="x", pady=(6, 0))
+        ctk.CTkButton(
+            scroll,
+            text="Escolher repositório…",
+            height=30,
+            corner_radius=8,
+            font=FONTS["tiny"],
+            fg_color="transparent",
+            hover_color=COLORS["stroke"],
+            text_color=COLORS["muted"],
+            border_width=1,
+            border_color=COLORS["stroke"],
+            command=lambda: self._open_github_repo_picker(parent=win, on_done=refresh_gh_opts),
+        ).pack(fill="x", pady=(6, 0))
+        ctk.CTkLabel(
+            scroll,
+            text="Com o token + repo, o criador de modpack sobe um Release (zip + index.json) pra outros usarem o mesmo catálogo.",
+            font=FONTS["tiny"],
+            text_color=COLORS["muted"],
+            wraplength=380,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
         ctk.CTkLabel(scroll, text="Argumentos JVM extras", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(
             anchor="w", pady=(14, 4)
         )
@@ -2136,6 +2657,7 @@ class PUTsLauncherApp(ctk.CTk):
             self.cfg.extra_jvm_args = jvm_box.get().strip()
             self.cfg.modpack_catalog = idx_var.get().strip()
             self.cfg.modpack_index_url = ""  # legacy cleared after migrate
+            self.cfg.github_publish_repo = repo_var.get().strip()
             if getattr(self, "ram_slider", None) is not None:
                 self.cfg.ram_gb = clamp_ram_gb(round(self.ram_slider.get()))
             self.cfg.save()
