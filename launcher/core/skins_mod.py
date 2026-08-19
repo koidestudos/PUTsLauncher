@@ -57,8 +57,14 @@ def _parse_mc_tuple(mc_version: str) -> tuple[int, int, int]:
     return nums[0], nums[1], nums[2]
 
 
-def resolve_skins_mod(mc_version: str) -> SkinsModArtifact:
-    """Pick CustomSkinLoader jar for the instance Minecraft version."""
+def resolve_skins_mod(mc_version: str, loader: str = "forge") -> SkinsModArtifact:
+    """Pick CustomSkinLoader jar for the instance Minecraft version / loader."""
+    from launcher.core.loaders import normalize_loader_name
+
+    name = normalize_loader_name(loader)
+    # Fabric / Quilt / NeoForge: Universal bootstrap is the safe choice.
+    if name in {"fabric", "quilt", "neoforge"}:
+        return _CSL_UNIVERSAL
     major, minor, patch = _parse_mc_tuple(mc_version)
     # 1.17.1 .. 1.20.4 → ForgeV2
     if (major, minor) >= (1, 17) and (major, minor, patch) <= (1, 20, 4):
@@ -172,6 +178,7 @@ def write_elyby_config(mc_dir: Path, *, force: bool = False) -> Path:
 def ensure_elyby_skins_mod(
     mc_dir: Optional[Path] = None,
     mc_version: str = "",
+    loader: str = "",
     tracker: Optional[ProgressTracker] = None,
 ) -> Path:
     """
@@ -179,16 +186,19 @@ def ensure_elyby_skins_mod(
     Called for every modpack / instance so offline players get skins from ely.by.
     """
     root = Path(mc_dir or minecraft_dir())
-    if not mc_version:
+    if not mc_version or not loader:
         try:
             from launcher.core.instances import GameInstance, get_active_id
 
             inst = GameInstance.load(get_active_id())
-            mc_version = (inst.mc_version if inst else "") or ""
+            if inst:
+                mc_version = mc_version or (inst.mc_version or "")
+                loader = loader or (getattr(inst, "loader", None) or "forge")
         except Exception:
-            mc_version = ""
+            pass
+    loader = loader or "forge"
 
-    artifact = resolve_skins_mod(mc_version)
+    artifact = resolve_skins_mod(mc_version, loader)
     if tracker:
         tracker.set_detail(f"Skins Ely.by — {artifact.label}")
 

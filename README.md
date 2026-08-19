@@ -1,12 +1,18 @@
 # PUTs Launcher
 
-Launcher do SMP com visual maracujá. Mods vêm do **+ Modpack** (link CurseForge/Modrinth ou catálogo GitHub), não junto do EXE.
+Launcher do SMP com visual maracujá. Mods vêm do **+ Modpack** (link CurseForge/Modrinth, criador próprio, ou catálogo GitHub), não junto do EXE.
 
 ## Fluxo
 
-1. **+ Modpack** → cole um link do CurseForge ou Modrinth (Forge), **ou** configure o catálogo GitHub em Opções (`dono/repo`)
-2. **BAIXAR** → Java + Forge daquela instância
+1. **+ Modpack** → cole um link CurseForge/Modrinth (Forge/Fabric/NeoForge), **crie seu pack** buscando mods, ou use o catálogo GitHub
+2. **BAIXAR** → Java + loader daquela instância
 3. **JOGAR** — Offline ou Microsoft
+
+## Loaders
+
+Suportados no index e no launcher: **Forge**, **Fabric**, **NeoForge**, **Quilt**.
+
+No `index.json` use `"loader"` + `"loader_version"` (ou o alias `"forge_version"`).
 
 ## Distribuição
 
@@ -16,7 +22,7 @@ Só o EXE:
 PUTsLauncher.exe
 ```
 
-Os zips de modpack ficam no **GitHub Releases** + `index.json`, ou são baixados direto do CurseForge/Modrinth.  
+Cache em `~/MinecraftPUTS/cache` é limpo automaticamente (packs importados e teto de espaço).
 Docs: [`docs/github-releases-modpacks.md`](docs/github-releases-modpacks.md).
 
 ## Windows build

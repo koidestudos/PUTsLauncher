@@ -114,7 +114,19 @@ No diálogo **+ Modpack**, cole a URL da página do modpack:
 - `https://www.curseforge.com/minecraft/modpacks/<slug>`
 - `https://www.curseforge.com/minecraft/modpacks/<slug>/files/<fileId>`
 
-Só packs **Forge** (Fabric/Quilt/NeoForge ainda não). O launcher baixa o `.mrpack` / zip, cria a instância e instala Java+Forge.
+Loaders: **Forge**, **Fabric**, **NeoForge**, **Quilt**. O launcher baixa o `.mrpack` / zip, cria a instância e instala Java + o loader certo.
+
+## Criar seu modpack
+
+Em **+ Modpack → Criar meu modpack**:
+
+1. Nome, versão do Minecraft e loader
+2. Busca mods no **Modrinth** e **CurseForge**
+3. Adiciona à lista e cria a instância
+
+## Cache
+
+`~/MinecraftPUTS/cache` é limitado (~350 MiB). Packs importados são apagados depois da instalação; o launcher limpa arquivos velhos na abertura e após installs.
 
 ## Skins no modo offline (Ely.by)
 

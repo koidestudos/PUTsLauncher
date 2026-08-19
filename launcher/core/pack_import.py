@@ -15,8 +15,14 @@ from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
 from launcher.config import FORGE_VERSION, MC_VERSION, cache_dir
-from launcher.core.installer import CancelledError, forge_profile_id, normalize_forge_install_version
+from launcher.core.installer import CancelledError
 from launcher.core.instances import GameInstance, create_instance, instances_root
+from launcher.core.loaders import (
+    loader_profile_id,
+    normalize_loader_name,
+    normalize_loader_version,
+    require_supported_loader,
+)
 from launcher.core.modpacks import (
     USER_AGENT,
     _contained,
@@ -38,6 +44,10 @@ DOWNLOAD_WORKERS = 32
 META_WORKERS = 20
 DOWNLOAD_RETRIES = 5
 META_RETRIES = 4
+
+SUPPORTED_MR_LOADERS = ("forge", "neoforge", "fabric", "quilt")
+# Preference when a pack publishes several loaders for the same version page.
+LOADER_PREFERENCE = ("forge", "neoforge", "fabric", "quilt")
 
 
 @dataclass
@@ -306,71 +316,91 @@ def parse_pack_url(url: str) -> ImportRef:
     )
 
 
-def _forge_from_mr_deps(deps: dict[str, Any], mc_fallback: str = "") -> tuple[str, str, str]:
-    """Return (mc_version, forge_install, loader_name)."""
+def _loader_from_mr_deps(deps: dict[str, Any], mc_fallback: str = "") -> tuple[str, str, str]:
+    """Return (mc_version, loader_version, loader_name)."""
     mc = str(deps.get("minecraft") or mc_fallback or MC_VERSION).strip()
-    loader = "forge"
-    forge_raw = ""
-    for key in ("forge", "neoforge", "fabric-loader", "quilt-loader"):
+    loader = ""
+    raw = ""
+    for key, name in (
+        ("forge", "forge"),
+        ("neoforge", "neoforge"),
+        ("fabric-loader", "fabric"),
+        ("quilt-loader", "quilt"),
+    ):
         if key in deps and deps[key]:
-            loader = key.replace("-loader", "").replace("fabric", "fabric").replace("quilt", "quilt")
-            if key == "fabric-loader":
-                loader = "fabric"
-            elif key == "quilt-loader":
-                loader = "quilt"
-            elif key == "neoforge":
-                loader = "neoforge"
-            else:
-                loader = "forge"
-            forge_raw = str(deps[key]).strip()
+            loader = name
+            raw = str(deps[key]).strip()
             break
-    if loader != "forge":
-        raise ValueError(
-            f"Este pack usa {loader}, e o PUTs Launcher só instala Forge por enquanto."
-        )
-    # deps forge can be "47.2.0" or "1.20.1-47.2.0"
-    install = normalize_forge_install_version(mc, forge_raw or FORGE_VERSION)
-    return mc, install, "forge"
+    if not loader:
+        raise ValueError("modrinth.index.json sem loader (forge/fabric/neoforge/quilt).")
+    require_supported_loader(loader)
+    install = normalize_loader_version(loader, mc, raw or FORGE_VERSION)
+    return mc, install, loader
 
 
-def _forge_from_cf_manifest(manifest: dict[str, Any]) -> tuple[str, str, str]:
+def _forge_from_mr_deps(deps: dict[str, Any], mc_fallback: str = "") -> tuple[str, str, str]:
+    """Back-compat alias → (mc, loader_version, loader)."""
+    return _loader_from_mr_deps(deps, mc_fallback)
+
+
+def _loader_from_cf_manifest(manifest: dict[str, Any]) -> tuple[str, str, str]:
+    """Return (mc_version, loader_version, loader_name) from CurseForge manifest."""
     mc_block = manifest.get("minecraft") or {}
     mc = str(mc_block.get("version") or MC_VERSION).strip()
     loaders = mc_block.get("modLoaders") or []
-    forge_raw = ""
+    found: list[tuple[str, str, bool]] = []
     for entry in loaders:
         if not isinstance(entry, dict):
             continue
         lid = str(entry.get("id") or "")
         low = lid.lower()
+        primary = bool(entry.get("primary"))
         if low.startswith("forge-"):
-            forge_raw = lid.split("-", 1)[1]
-            break
-        if "fabric" in low or "quilt" in low or "neoforge" in low:
-            raise ValueError(
-                f"Este pack CurseForge usa {lid}, e o launcher só instala Forge."
-            )
-    if not forge_raw and loaders:
-        # unknown loader
-        raise ValueError("Não achei Forge no manifest deste modpack CurseForge.")
-    install = normalize_forge_install_version(mc, forge_raw or FORGE_VERSION)
-    return mc, install, "forge"
+            found.append(("forge", lid.split("-", 1)[1], primary))
+        elif low.startswith("neoforge-"):
+            found.append(("neoforge", lid.split("-", 1)[1], primary))
+        elif low.startswith("fabric-"):
+            found.append(("fabric", lid.split("-", 1)[1], primary))
+        elif low.startswith("quilt-"):
+            found.append(("quilt", lid.split("-", 1)[1], primary))
+    if not found:
+        if loaders:
+            ids = ", ".join(str((e or {}).get("id") or "?") for e in loaders if isinstance(e, dict))
+            raise ValueError(f"Loader não suportado no manifest CurseForge: {ids}")
+        raise ValueError("Não achei Forge/Fabric/NeoForge no manifest deste modpack.")
+
+    primary = next(((n, v) for n, v, p in found if p), None)
+    if primary:
+        loader, raw = primary
+    else:
+        by_name = {n: v for n, v, _p in found}
+        loader = next((n for n in LOADER_PREFERENCE if n in by_name), found[0][0])
+        raw = by_name[loader]
+    require_supported_loader(loader)
+    install = normalize_loader_version(loader, mc, raw or FORGE_VERSION)
+    return mc, install, loader
+
+
+def _forge_from_cf_manifest(manifest: dict[str, Any]) -> tuple[str, str, str]:
+    return _loader_from_cf_manifest(manifest)
 
 
 def resolve_modrinth_version(ref: ImportRef) -> dict[str, Any]:
-    """Fetch project + pick a Forge .mrpack version."""
+    """Fetch project + pick a supported .mrpack version (Forge/Fabric/NeoForge/Quilt)."""
     proj = _http_json(f"{MODRINTH_API}/project/{ref.slug}")
     if str(proj.get("project_type") or "") != "modpack":
         raise ValueError(f"“{ref.slug}” no Modrinth não é um modpack (é {proj.get('project_type')}).")
 
-    versions = _http_json(
-        f"{MODRINTH_API}/project/{ref.slug}/version?loaders=%5B%22forge%22%5D"
-    )
-    if not isinstance(versions, list) or not versions:
-        # try without loader filter then filter client-side
-        versions = _http_json(f"{MODRINTH_API}/project/{ref.slug}/version")
+    versions = _http_json(f"{MODRINTH_API}/project/{ref.slug}/version")
     if not isinstance(versions, list) or not versions:
         raise ValueError(f"Nenhuma versão encontrada para {ref.slug} no Modrinth.")
+
+    def score(v: dict[str, Any]) -> int:
+        loaders = [normalize_loader_name(str(x)) for x in (v.get("loaders") or [])]
+        for i, pref in enumerate(LOADER_PREFERENCE):
+            if pref in loaders:
+                return i
+        return 99
 
     picked = None
     hint = (ref.version_hint or "").strip()
@@ -382,19 +412,23 @@ def resolve_modrinth_version(ref: ImportRef) -> dict[str, Any]:
         if picked is None:
             raise ValueError(f"Versão “{hint}” não encontrada em {ref.slug}.")
     else:
-        for v in versions:
-            loaders = [str(x).lower() for x in (v.get("loaders") or [])]
-            if "forge" in loaders:
-                picked = v
-                break
-        if picked is None:
-            picked = versions[0]
+        supported = [
+            v
+            for v in versions
+            if any(
+                normalize_loader_name(str(x)) in SUPPORTED_MR_LOADERS
+                for x in (v.get("loaders") or [])
+            )
+        ]
+        pool = supported or versions
+        pool = sorted(pool, key=score)
+        picked = pool[0]
 
-    loaders = [str(x).lower() for x in (picked.get("loaders") or [])]
-    if loaders and "forge" not in loaders:
+    loaders = [normalize_loader_name(str(x)) for x in (picked.get("loaders") or [])]
+    if loaders and not any(x in SUPPORTED_MR_LOADERS for x in loaders):
         raise ValueError(
             f"A versão {picked.get('version_number')} usa {', '.join(loaders)} — "
-            "este launcher só instala Forge."
+            "este launcher instala Forge, Fabric, NeoForge ou Quilt."
         )
 
     files = picked.get("files") or []
@@ -445,9 +479,10 @@ def resolve_curseforge_file(ref: ImportRef) -> dict[str, Any]:
             raise ValueError(f"Arquivo CurseForge #{hint} não encontrado.")
     else:
         files = _http_json(f"{CURSE_API}/mods/{mid}/files?pageSize=20").get("data") or []
+        preferred = {"forge", "neoforge", "fabric", "quilt"}
         for f in files:
-            gvs = [str(x).lower() for x in (f.get("gameVersions") or [])]
-            if "forge" in gvs:
+            gvs = {str(x).lower() for x in (f.get("gameVersions") or [])}
+            if gvs & preferred:
                 file_data = f
                 break
         if file_data is None and files:
@@ -521,10 +556,10 @@ def install_mrpack(
     instance: GameInstance,
     tracker: Optional[ProgressTracker] = None,
     cancel_event=None,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """
     Install a Modrinth .mrpack into the instance.
-    Returns (mc_version, forge_install_version).
+    Returns (mc_version, loader_version, loader_name).
     """
     mc = _safe_instance_dir(instance.minecraft_path, instance.root)
     mc.mkdir(parents=True, exist_ok=True)
@@ -533,7 +568,7 @@ def install_mrpack(
         if "modrinth.index.json" not in zf.namelist():
             raise ValueError("Arquivo .mrpack sem modrinth.index.json")
         index = json.loads(zf.read("modrinth.index.json").decode("utf-8"))
-        mc_ver, forge_ver, _loader = _forge_from_mr_deps(index.get("dependencies") or {})
+        mc_ver, forge_ver, loader = _loader_from_mr_deps(index.get("dependencies") or {})
         files = index.get("files") or []
         if not files:
             raise ValueError("modrinth.index.json sem lista de arquivos")
@@ -576,14 +611,14 @@ def install_mrpack(
     try:
         from launcher.core.skins_mod import ensure_elyby_skins_mod
 
-        ensure_elyby_skins_mod(mc, mc_version=mc_ver, tracker=tracker)
+        ensure_elyby_skins_mod(mc, mc_version=mc_ver, loader=loader, tracker=tracker)
     except Exception as exc:
         if tracker:
             tracker.set_detail(f"Aviso skins Ely.by: {exc}")
 
     if tracker:
         tracker.complete_phase("Modpack Modrinth instalado")
-    return mc_ver, forge_ver
+    return mc_ver, forge_ver, loader
 
 
 def install_curseforge_zip(
@@ -591,10 +626,10 @@ def install_curseforge_zip(
     instance: GameInstance,
     tracker: Optional[ProgressTracker] = None,
     cancel_event=None,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """
     Install a CurseForge modpack zip (manifest.json + overrides).
-    Returns (mc_version, forge_install_version).
+    Returns (mc_version, loader_version, loader_name).
     """
     mc = _safe_instance_dir(instance.minecraft_path, instance.root)
     mc.mkdir(parents=True, exist_ok=True)
@@ -605,7 +640,7 @@ def install_curseforge_zip(
         if not manifest_name:
             raise ValueError("Zip CurseForge sem manifest.json")
         manifest = json.loads(zf.read(manifest_name).decode("utf-8"))
-        mc_ver, forge_ver, _loader = _forge_from_cf_manifest(manifest)
+        mc_ver, forge_ver, loader = _loader_from_cf_manifest(manifest)
         files = [f for f in (manifest.get("files") or []) if isinstance(f, dict) and f.get("required", True)]
         if not files:
             raise ValueError("manifest.json sem arquivos de mods")
@@ -640,14 +675,14 @@ def install_curseforge_zip(
     try:
         from launcher.core.skins_mod import ensure_elyby_skins_mod
 
-        ensure_elyby_skins_mod(mc, mc_version=mc_ver, tracker=tracker)
+        ensure_elyby_skins_mod(mc, mc_version=mc_ver, loader=loader, tracker=tracker)
     except Exception as exc:
         if tracker:
             tracker.set_detail(f"Aviso skins Ely.by: {exc}")
 
     if tracker:
         tracker.complete_phase("Modpack CurseForge instalado")
-    return mc_ver, forge_ver
+    return mc_ver, forge_ver, loader
 
 
 def _prepare_instance(
@@ -659,12 +694,14 @@ def _prepare_instance(
     forge_version: str,
     source: str,
     origin: str,
+    loader: str = "forge",
 ) -> GameInstance:
     pack_id = _require_safe(_slug(pack_id), "id do modpack")
     pack_version = _require_safe(_slug(pack_version) or "1.0.0", "versão do modpack")
     from launcher.core.modpacks import installed_instance_for
     from launcher.core.modpacks import ModpackInfo
 
+    loader_name = normalize_loader_name(loader)
     probe = ModpackInfo(id=pack_id, name=name, version=pack_version)
     existing = installed_instance_for(probe, origin)
     if existing is not None:
@@ -676,6 +713,7 @@ def _prepare_instance(
             modpack_version=pack_version,
             mc_version=mc_version,
             forge_version=forge_version,
+            loader=loader_name,
             source=source,
             instance_id=pack_id,
         )
@@ -683,8 +721,9 @@ def _prepare_instance(
     inst.modpack_id = pack_id
     inst.modpack_version = pack_version
     inst.mc_version = mc_version
-    inst.forge_version = normalize_forge_install_version(mc_version, forge_version)
-    inst.forge_profile = forge_profile_id(inst.mc_version, inst.forge_version)
+    inst.loader = loader_name
+    inst.forge_version = normalize_loader_version(loader_name, mc_version, forge_version)
+    inst.forge_profile = loader_profile_id(loader_name, inst.mc_version, inst.forge_version)
     inst.source = source
     inst.extra["catalog_origin"] = origin
     inst.ensure_dirs()
@@ -720,10 +759,10 @@ def install_from_url(
         _check_cancel(cancel_event)
         download_file(dl, mr_path, tracker=tracker, cancel_event=cancel_event, timeout=300)
 
-        # Peek deps before creating instance so forge/mc are right
+        # Peek deps before creating instance so loader/mc are right
         with zipfile.ZipFile(mr_path, "r") as zf:
             index = json.loads(zf.read("modrinth.index.json").decode("utf-8"))
-        mc_ver, forge_ver, _ = _forge_from_mr_deps(index.get("dependencies") or {})
+        mc_ver, forge_ver, loader = _loader_from_mr_deps(index.get("dependencies") or {})
 
         inst = _prepare_instance(
             name=name,
@@ -733,16 +772,27 @@ def install_from_url(
             forge_version=forge_ver,
             source="modrinth",
             origin=f"modrinth:{pack_id}",
+            loader=loader,
         )
-        mc_ver, forge_ver = install_mrpack(mr_path, inst, tracker=tracker, cancel_event=cancel_event)
+        mc_ver, forge_ver, loader = install_mrpack(
+            mr_path, inst, tracker=tracker, cancel_event=cancel_event
+        )
         inst.mc_version = mc_ver
+        inst.loader = loader
         inst.forge_version = forge_ver
-        inst.forge_profile = forge_profile_id(mc_ver, forge_ver)
+        inst.forge_profile = loader_profile_id(loader, mc_ver, forge_ver)
         inst.modpack_version = pack_version
         inst.source = "modrinth"
         inst.extra["catalog_origin"] = f"modrinth:{pack_id}"
         inst.extra["import_url"] = ref.raw_url
         inst.save_meta()
+        try:
+            from launcher.core.cache_cleanup import cleanup_cache, forget_cache_file
+
+            forget_cache_file(mr_path)
+            cleanup_cache()
+        except Exception:
+            pass
         return inst
 
     if ref.platform == "curseforge":
@@ -779,7 +829,7 @@ def install_from_url(
             if not manifest_name:
                 raise ValueError("Zip CurseForge sem manifest.json")
             manifest = json.loads(zf.read(manifest_name).decode("utf-8"))
-        mc_ver, forge_ver, _ = _forge_from_cf_manifest(manifest)
+        mc_ver, forge_ver, loader = _loader_from_cf_manifest(manifest)
 
         inst = _prepare_instance(
             name=name,
@@ -789,18 +839,27 @@ def install_from_url(
             forge_version=forge_ver,
             source="curseforge",
             origin=f"curseforge:{pack_id}",
+            loader=loader,
         )
-        mc_ver, forge_ver = install_curseforge_zip(
+        mc_ver, forge_ver, loader = install_curseforge_zip(
             zip_path, inst, tracker=tracker, cancel_event=cancel_event
         )
         inst.mc_version = mc_ver
+        inst.loader = loader
         inst.forge_version = forge_ver
-        inst.forge_profile = forge_profile_id(mc_ver, forge_ver)
+        inst.forge_profile = loader_profile_id(loader, mc_ver, forge_ver)
         inst.modpack_version = pack_version
         inst.source = "curseforge"
         inst.extra["catalog_origin"] = f"curseforge:{pack_id}"
         inst.extra["import_url"] = ref.raw_url
         inst.save_meta()
+        try:
+            from launcher.core.cache_cleanup import cleanup_cache, forget_cache_file
+
+            forget_cache_file(zip_path)
+            cleanup_cache()
+        except Exception:
+            pass
         return inst
 
     raise ValueError(f"Plataforma não suportada: {ref.platform}")

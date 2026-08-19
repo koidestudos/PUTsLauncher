@@ -659,14 +659,17 @@ def installed_instance_for(pack: "ModpackInfo", catalog_origin: str = "") -> Opt
     return None
 
 
-SUPPORTED_LOADERS = {"", "forge"}
+SUPPORTED_LOADERS = {"", "forge", "fabric", "neoforge", "quilt"}
 
 
 def _require_supported_loader(pack: "ModpackInfo") -> None:
-    loader = (pack.loader or "").strip().lower()
-    if loader not in SUPPORTED_LOADERS:
+    from launcher.core.loaders import normalize_loader_name
+
+    loader = normalize_loader_name(pack.loader or "forge")
+    if loader not in SUPPORTED_LOADERS - {""}:
         raise ValueError(
-            f"O modpack {pack.name or pack.id} usa {loader}, e este launcher só instala Forge."
+            f"O modpack {pack.name or pack.id} usa {pack.loader}, "
+            "e este launcher instala Forge, Fabric, NeoForge ou Quilt."
         )
 
 
@@ -729,8 +732,13 @@ def install_modpack(
     from launcher.core.instances import instances_root
 
     existing = installed_instance_for(pack, catalog_origin)
-    from launcher.core.installer import forge_profile_id, normalize_forge_install_version
+    from launcher.core.loaders import (
+        loader_profile_id,
+        normalize_loader_name,
+        normalize_loader_version,
+    )
 
+    loader_name = normalize_loader_name(pack.loader or "forge")
     created = existing is None
     if existing is not None:
         inst = existing
@@ -742,6 +750,7 @@ def install_modpack(
             modpack_version=pack_version,
             mc_version=pack.mc_version or MC_VERSION,
             forge_version=pack.loader_version or FORGE_VERSION,
+            loader=loader_name,
             server_ip=pack.server_ip,
             server_port=pack.server_port,
             source="github",
@@ -768,10 +777,11 @@ def install_modpack(
     inst.modpack_id = pack_id
     inst.modpack_version = pack_version
     inst.mc_version = pack.mc_version or inst.mc_version
-    inst.forge_version = normalize_forge_install_version(
-        inst.mc_version, pack.loader_version or inst.forge_version
+    inst.loader = loader_name
+    inst.forge_version = normalize_loader_version(
+        loader_name, inst.mc_version, pack.loader_version or inst.forge_version
     )
-    inst.forge_profile = forge_profile_id(inst.mc_version, inst.forge_version)
+    inst.forge_profile = loader_profile_id(loader_name, inst.mc_version, inst.forge_version)
     inst.server_ip = pack.server_ip
     inst.server_port = pack.server_port
     inst.source = "github"
@@ -779,6 +789,12 @@ def install_modpack(
         inst.extra["catalog_origin"] = catalog_origin
     inst.ensure_dirs()
     inst.save_meta()
+    try:
+        from launcher.core.cache_cleanup import cleanup_cache
+
+        cleanup_cache()
+    except Exception:
+        pass
     return inst
 
 

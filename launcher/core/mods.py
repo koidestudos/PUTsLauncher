@@ -45,7 +45,7 @@ def sync_mods(tracker: Optional[ProgressTracker] = None) -> int:
     n = len(jars)
 
     # GitHub / remote pack already extracted into the instance
-    if inst and inst.source in {"github", "r2", "modrinth", "curseforge"}:
+    if inst and inst.source in {"github", "r2", "modrinth", "curseforge", "custom"}:
         if tracker:
             tracker.set_phase("mods", f"Modpack — {n} mods")
         if n == 0:

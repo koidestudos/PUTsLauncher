@@ -24,18 +24,25 @@ DEFAULT_PHASES = {
 }
 
 
-def _jvm_arguments(cfg: LauncherConfig) -> list[str]:
+def _jvm_arguments(cfg: LauncherConfig, loader: str = "forge") -> list[str]:
     # Never hand the JVM more memory than the machine has, even if an old
     # config (or a hand-edited one) asks for it.
+    from launcher.core.loaders import uses_fml_flags
+
     ram_gb = clamp_ram_gb(cfg.ram_gb or 4)
     min_gb = max(1, ram_gb // 2) if getattr(cfg, "allocate_min_half_ram", True) else 1
     args = [
         f"-Xmx{ram_gb}G",
         f"-Xms{min_gb}G",
         "-Djava.net.preferIPv4Stack=true",
-        "-Dfml.ignoreInvalidMinecraftCertificates=true",
-        "-Dfml.ignorePatchDiscrepancies=true",
     ]
+    if uses_fml_flags(loader):
+        args.extend(
+            [
+                "-Dfml.ignoreInvalidMinecraftCertificates=true",
+                "-Dfml.ignorePatchDiscrepancies=true",
+            ]
+        )
 
     if getattr(cfg, "use_g1gc", True):
         args.extend(
@@ -121,14 +128,17 @@ def apply_video_options(mc_dir: Path, fullscreen: bool, vsync: bool) -> None:
 
 def build_launch_command(cfg: LauncherConfig, session: GameSession, java: str) -> list[str]:
     mc_dir = str(minecraft_dir())
+    loader_name = "forge"
     try:
-        from launcher.core.installer import active_forge_target
+        from launcher.core.installer import active_loader_target
         from launcher.core.instances import GameInstance, get_active_id
 
-        _, _, profile = active_forge_target()
+        loader_name, _, _, profile = active_loader_target()
         inst = GameInstance.load(get_active_id())
         if inst and inst.forge_profile:
             profile = inst.forge_profile
+        if inst and getattr(inst, "loader", None):
+            loader_name = inst.loader
     except Exception:
         profile = FORGE_PROFILE
 
@@ -140,7 +150,7 @@ def build_launch_command(cfg: LauncherConfig, session: GameSession, java: str) -
         "launcherVersion": "1.4.0",
         "gameDirectory": mc_dir,
         "executablePath": java,
-        "jvmArguments": _jvm_arguments(cfg),
+        "jvmArguments": _jvm_arguments(cfg, loader_name),
     }
 
     fullscreen = bool(getattr(cfg, "fullscreen", False))

@@ -59,6 +59,14 @@ from launcher.core import (
     verify_modpack_files,
 )
 from launcher.core.instances import apply_instance_to_config, delete_instance
+from launcher.core.loaders import loader_display_name
+from launcher.core.mod_library import (
+    LibraryMod,
+    SelectedMod,
+    create_custom_modpack,
+    resolve_library_mod,
+    search_mods,
+)
 from launcher.core.system import MIN_RAM_GB, clamp_ram_gb, max_ram_gb, total_ram_gb
 from launcher.ui.skin3d import Skin3DViewer
 from launcher.ui.theme import COLORS, FONTS, register_fonts
@@ -154,6 +162,12 @@ class PUTsLauncherApp(ctk.CTk):
         super().__init__()
         self.cfg = bootstrap_instances(LauncherConfig.load())
         purge_legacy_skin_files()  # skins agora vivem só na RAM
+        try:
+            from launcher.core.cache_cleanup import cleanup_cache
+
+            cleanup_cache()
+        except Exception:
+            pass
         self.title(f"{__app_name__}")
         self.geometry("1020x680")
         self.minsize(940, 620)
@@ -628,9 +642,10 @@ class PUTsLauncherApp(ctk.CTk):
         if inst:
             pack = f"  ·  {inst.modpack_id}@{inst.modpack_version}" if inst.modpack_id else ""
             mods = f"  ·  {n_mods} mods" if n_mods else "  ·  sem mods"
-            hint = "pronto" if ready else "baixar Java/Forge"
+            loader = loader_display_name(getattr(inst, "loader", None) or "forge")
+            hint = "pronto" if ready else f"baixar Java/{loader}"
             self.meta_label.configure(
-                text=f"{inst.name}  ·  MC {inst.mc_version}  ·  Forge {inst.forge_version}{pack}{mods}  ·  {hint}"
+                text=f"{inst.name}  ·  MC {inst.mc_version}  ·  {loader} {inst.forge_version}{pack}{mods}  ·  {hint}"
             )
         else:
             self.meta_label.configure(text="Instale um modpack em + Modpack")
@@ -657,7 +672,7 @@ class PUTsLauncherApp(ctk.CTk):
         self.percent_label.configure(text=f"{int(state.percent)}%")
         titles = {
             "java": "Baixando Java",
-            "forge": "Baixando Minecraft + Forge",
+            "forge": "Baixando Minecraft + loader",
             "mods": "Mods do pack",
             "launch": "Abrindo o jogo",
         }
@@ -738,8 +753,9 @@ class PUTsLauncherApp(ctk.CTk):
             inst = None
         if inst:
             pack = f"  ·  {inst.modpack_id}@{inst.modpack_version}" if inst.modpack_id else ""
+            loader = loader_display_name(getattr(inst, "loader", None) or "forge")
             self.meta_label.configure(
-                text=f"{inst.name}  ·  MC {inst.mc_version}  ·  Forge {inst.forge_version}{pack}"
+                text=f"{inst.name}  ·  MC {inst.mc_version}  ·  {loader} {inst.forge_version}{pack}"
             )
         else:
             self.meta_label.configure(text=f"Minecraft {MC_VERSION}  ·  Forge {FORGE_VERSION}")
@@ -800,7 +816,7 @@ class PUTsLauncherApp(ctk.CTk):
         ctk.CTkLabel(head, text="Modpacks", font=FONTS["title"], text_color=COLORS["accent"]).pack(anchor="w")
         ctk.CTkLabel(
             head,
-            text="Cole um link do CurseForge ou Modrinth, ou use o catálogo GitHub.",
+            text="Link CurseForge/Modrinth, crie o seu pack, ou use o catálogo GitHub.",
             font=FONTS["small"],
             text_color=COLORS["muted"],
             anchor="w",
@@ -820,7 +836,7 @@ class PUTsLauncherApp(ctk.CTk):
         ).pack(fill="x", padx=14, pady=(12, 0))
         ctk.CTkLabel(
             import_box,
-            text="Ex.: modrinth.com/modpack/…  ·  curseforge.com/minecraft/modpacks/…",
+            text="Forge / Fabric / NeoForge · modrinth.com/modpack/… · curseforge.com/…/modpacks/…",
             font=FONTS["tiny"],
             text_color=COLORS["muted"],
             anchor="w",
@@ -858,6 +874,19 @@ class PUTsLauncherApp(ctk.CTk):
             hover_color=COLORS["accent_hot"],
             text_color=COLORS["accent_text"],
             command=do_import,
+        ).pack(fill="x", padx=14, pady=(0, 6))
+        ctk.CTkButton(
+            import_box,
+            text="Criar meu modpack…",
+            height=32,
+            corner_radius=10,
+            font=FONTS["small"],
+            fg_color="transparent",
+            hover_color=COLORS["stroke"],
+            text_color=COLORS["muted"],
+            border_width=1,
+            border_color=COLORS["stroke"],
+            command=lambda: (win.destroy(), self._open_create_modpack()),
         ).pack(fill="x", padx=14, pady=(0, 12))
         link_entry.bind("<Return>", lambda _e: do_import())
 
@@ -1063,6 +1092,311 @@ class PUTsLauncherApp(ctk.CTk):
             self._refresh_instance_menu()
             self._refresh_ready_state()
             messagebox.showinfo("Importar modpack", f"Instância pronta: {inst.name}")
+
+        self._run_bg(job, done, busy_text="PACK…")
+
+    def _open_create_modpack(self) -> None:
+        if self._busy:
+            messagebox.showinfo("Modpacks", "Espere a tarefa atual terminar.")
+            return
+
+        win = ctk.CTkToplevel(self)
+        win.title("Criar modpack")
+        win.geometry("640x720")
+        win.minsize(560, 600)
+        win.configure(fg_color=COLORS["bg1"])
+        win.transient(self)
+
+        head = ctk.CTkFrame(win, fg_color="transparent")
+        head.pack(fill="x", padx=20, pady=(18, 6))
+        ctk.CTkLabel(head, text="Criar modpack", font=FONTS["title"], text_color=COLORS["accent"]).pack(
+            anchor="w"
+        )
+        ctk.CTkLabel(
+            head,
+            text="Escolha Minecraft + loader e monte a lista com mods do Modrinth e CurseForge.",
+            font=FONTS["small"],
+            text_color=COLORS["muted"],
+            wraplength=580,
+            justify="left",
+            anchor="w",
+        ).pack(anchor="w", pady=(4, 0))
+
+        form = ctk.CTkFrame(win, fg_color=COLORS["panel"], corner_radius=14)
+        form.pack(fill="x", padx=16, pady=8)
+        name_var = ctk.StringVar(value="Meu Pack")
+        mc_var = ctk.StringVar(value="1.20.1")
+        loader_var = ctk.StringVar(value="Forge")
+        query_var = ctk.StringVar()
+
+        row1 = ctk.CTkFrame(form, fg_color="transparent")
+        row1.pack(fill="x", padx=14, pady=(12, 6))
+        ctk.CTkLabel(row1, text="Nome", font=FONTS["tiny"], text_color=COLORS["muted"]).pack(anchor="w")
+        ctk.CTkEntry(row1, textvariable=name_var, height=34, corner_radius=10).pack(fill="x", pady=(2, 0))
+
+        row2 = ctk.CTkFrame(form, fg_color="transparent")
+        row2.pack(fill="x", padx=14, pady=(0, 10))
+        left = ctk.CTkFrame(row2, fg_color="transparent")
+        left.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        right = ctk.CTkFrame(row2, fg_color="transparent")
+        right.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        ctk.CTkLabel(left, text="Minecraft", font=FONTS["tiny"], text_color=COLORS["muted"]).pack(anchor="w")
+        ctk.CTkOptionMenu(
+            left,
+            variable=mc_var,
+            values=["1.18.2", "1.19.2", "1.20.1", "1.20.4", "1.21.1", "1.21.4"],
+            height=34,
+            corner_radius=10,
+            fg_color=COLORS["bg1"],
+            button_color=COLORS["stroke"],
+            button_hover_color=COLORS["accent"],
+        ).pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(right, text="Loader", font=FONTS["tiny"], text_color=COLORS["muted"]).pack(anchor="w")
+        ctk.CTkOptionMenu(
+            right,
+            variable=loader_var,
+            values=["Forge", "Fabric", "NeoForge", "Quilt"],
+            height=34,
+            corner_radius=10,
+            fg_color=COLORS["bg1"],
+            button_color=COLORS["stroke"],
+            button_hover_color=COLORS["accent"],
+        ).pack(fill="x", pady=(2, 0))
+
+        search_row = ctk.CTkFrame(form, fg_color="transparent")
+        search_row.pack(fill="x", padx=14, pady=(0, 12))
+        ctk.CTkEntry(
+            search_row,
+            textvariable=query_var,
+            height=34,
+            corner_radius=10,
+            placeholder_text="Buscar mods (ex.: JEI, Sodium, Create)…",
+        ).pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        selected: list[SelectedMod] = []
+        selected_keys: set[str] = set()
+
+        body = ctk.CTkFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        results_frame = ctk.CTkScrollableFrame(body, fg_color="transparent", label_text="Resultados")
+        results_frame.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        picked_frame = ctk.CTkScrollableFrame(body, fg_color="transparent", label_text="No pack")
+        picked_frame.pack(side="left", fill="both", expand=True, padx=(6, 0))
+
+        status = ctk.CTkLabel(win, text="", font=FONTS["tiny"], text_color=COLORS["muted"])
+        status.pack(anchor="w", padx=20)
+
+        def loader_key() -> str:
+            return (loader_var.get() or "forge").strip().lower()
+
+        def redraw_picked():
+            for child in picked_frame.winfo_children():
+                child.destroy()
+            if not selected:
+                ctk.CTkLabel(picked_frame, text="Nenhum mod ainda.", text_color=COLORS["muted"]).pack(
+                    anchor="w", padx=6, pady=6
+                )
+                return
+            for mod in selected:
+                row = ctk.CTkFrame(picked_frame, fg_color=COLORS["panel"], corner_radius=10)
+                row.pack(fill="x", pady=4)
+                ctk.CTkLabel(
+                    row,
+                    text=f"{mod.name}",
+                    font=FONTS["small"],
+                    text_color=COLORS["text"],
+                    anchor="w",
+                ).pack(fill="x", padx=10, pady=(8, 0))
+                ctk.CTkLabel(
+                    row,
+                    text=f"{mod.platform} · {mod.slug}",
+                    font=FONTS["tiny"],
+                    text_color=COLORS["muted"],
+                    anchor="w",
+                ).pack(fill="x", padx=10)
+
+                def remove(m=mod):
+                    key = f"{m.platform}:{m.project_id}"
+                    selected[:] = [x for x in selected if f"{x.platform}:{x.project_id}" != key]
+                    selected_keys.discard(key)
+                    redraw_picked()
+
+                ctk.CTkButton(
+                    row,
+                    text="Remover",
+                    height=28,
+                    corner_radius=8,
+                    font=FONTS["tiny"],
+                    fg_color="transparent",
+                    hover_color=COLORS["stroke"],
+                    text_color=COLORS["muted"],
+                    command=remove,
+                ).pack(fill="x", padx=10, pady=(4, 8))
+
+        def add_mod(lib: LibraryMod):
+            key = f"{lib.platform}:{lib.project_id}"
+            if key in selected_keys:
+                return
+            status.configure(text=f"Resolvendo {lib.name}…")
+
+            def job():
+                return resolve_library_mod(
+                    lib, mc_version=mc_var.get().strip(), loader=loader_key()
+                )
+
+            def done(sel, err):
+                if err:
+                    messagebox.showerror("Mods", str(err), parent=win)
+                    status.configure(text="")
+                    return
+                selected.append(sel)
+                selected_keys.add(key)
+                redraw_picked()
+                status.configure(text=f"Adicionado: {sel.name}")
+
+            self._run_bg(job, done, busy_text=None)
+
+        def render_results(mods: list[LibraryMod], err=None):
+            for child in results_frame.winfo_children():
+                child.destroy()
+            if err:
+                status.configure(text=str(err))
+                ctk.CTkLabel(results_frame, text=str(err), text_color=COLORS["danger"]).pack(
+                    anchor="w", padx=6, pady=6
+                )
+                return
+            status.configure(text=f"{len(mods)} resultado(s)")
+            if not mods:
+                ctk.CTkLabel(results_frame, text="Nada encontrado.", text_color=COLORS["muted"]).pack(
+                    anchor="w", padx=6, pady=6
+                )
+                return
+            for lib in mods:
+                card = ctk.CTkFrame(results_frame, fg_color=COLORS["panel"], corner_radius=10)
+                card.pack(fill="x", pady=4)
+                ctk.CTkLabel(
+                    card,
+                    text=lib.name,
+                    font=FONTS["body_bold"],
+                    text_color=COLORS["text"],
+                    anchor="w",
+                ).pack(fill="x", padx=10, pady=(8, 0))
+                ctk.CTkLabel(
+                    card,
+                    text=f"{lib.platform} · {lib.slug}"
+                    + (f" · {lib.description}" if lib.description else ""),
+                    font=FONTS["tiny"],
+                    text_color=COLORS["muted"],
+                    anchor="w",
+                    wraplength=260,
+                    justify="left",
+                ).pack(fill="x", padx=10, pady=(2, 0))
+                ctk.CTkButton(
+                    card,
+                    text="Adicionar",
+                    height=28,
+                    corner_radius=8,
+                    font=FONTS["tiny"],
+                    fg_color=COLORS["accent"],
+                    hover_color=COLORS["accent_hot"],
+                    text_color=COLORS["accent_text"],
+                    command=lambda m=lib: add_mod(m),
+                ).pack(fill="x", padx=10, pady=(6, 8))
+
+        def do_search():
+            q = (query_var.get() or "").strip()
+            status.configure(text="Buscando…")
+
+            def job():
+                return search_mods(
+                    q, mc_version=mc_var.get().strip(), loader=loader_key(), limit=12
+                )
+
+            def done(mods, err):
+                render_results(mods or [], err)
+
+            self._run_bg(job, done, busy_text=None)
+
+        ctk.CTkButton(
+            search_row,
+            text="Buscar",
+            width=90,
+            height=34,
+            corner_radius=10,
+            font=FONTS["body_bold"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hot"],
+            text_color=COLORS["accent_text"],
+            command=do_search,
+        ).pack(side="left")
+
+        foot = ctk.CTkFrame(win, fg_color="transparent")
+        foot.pack(fill="x", padx=16, pady=(4, 16))
+
+        def do_create():
+            if not selected:
+                messagebox.showinfo("Criar pack", "Adicione pelo menos um mod.", parent=win)
+                return
+            nm = (name_var.get() or "").strip() or "Meu Pack"
+            win.destroy()
+            self._install_custom_modpack(
+                name=nm,
+                mc_version=mc_var.get().strip(),
+                loader=loader_key(),
+                mods=list(selected),
+            )
+
+        ctk.CTkButton(
+            foot,
+            text="Criar instância com estes mods",
+            height=40,
+            corner_radius=10,
+            font=FONTS["body_bold"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hot"],
+            text_color=COLORS["accent_text"],
+            command=do_create,
+        ).pack(fill="x")
+        redraw_picked()
+
+    def _install_custom_modpack(self, *, name: str, mc_version: str, loader: str, mods: list) -> None:
+        self._cancel.clear()
+        self._show_progress(True)
+        self.progress_title.configure(text="Criar pack")
+        self.detail_label.configure(text=f"Montando {name}…")
+
+        def job():
+            tracker = ProgressTracker({"mods": 0.55, "java": 0.2, "forge": 0.25})
+            tracker.on_update = lambda s: self.after(0, lambda: self._set_progress_ui(s))
+            inst = create_custom_modpack(
+                name=name,
+                mc_version=mc_version,
+                loader=loader,
+                mods=mods,
+                tracker=tracker,
+                cancel_event=self._cancel,
+            )
+            activate_instance(inst.id)
+            apply_instance_to_config(self.cfg, inst)
+            self.cfg = LauncherConfig.load()
+            prepare_game(self.cfg, tracker=tracker, cancel_event=self._cancel)
+            sync_mods(tracker=tracker)
+            return inst
+
+        def done(inst, err):
+            self._show_progress(False)
+            if isinstance(err, CancelledError) or self._cancel.is_set():
+                self.detail_label.configure(text="Criação cancelada.")
+                self._refresh_instance_menu()
+                self._refresh_ready_state()
+                return
+            if err:
+                messagebox.showerror("Criar modpack", str(err))
+                return
+            self.cfg = LauncherConfig.load()
+            self._refresh_instance_menu()
+            self._refresh_ready_state()
+            messagebox.showinfo("Criar modpack", f"Instância pronta: {inst.name}")
 
         self._run_bg(job, done, busy_text="PACK…")
 

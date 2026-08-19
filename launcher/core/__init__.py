@@ -25,6 +25,8 @@ from launcher.core.modpacks import (
 from launcher.core.pack_import import install_from_url, parse_pack_url
 from launcher.core.mods import list_bundled_mods, list_instance_mods, sync_mods
 from launcher.core.progress import ProgressState, ProgressTracker
+from launcher.core.cache_cleanup import cleanup_cache
+from launcher.core.mod_library import create_custom_modpack, search_mods
 
 __all__ = [
     "CancelledError",
@@ -35,6 +37,8 @@ __all__ = [
     "ProgressTracker",
     "activate_instance",
     "build_launch_command",
+    "cleanup_cache",
+    "create_custom_modpack",
     "create_instance",
     "delete_instance",
     "fetch_modpack_index",
@@ -51,6 +55,7 @@ __all__ = [
     "prepare_game",
     "reinstall_game",
     "resolve_java",
+    "search_mods",
     "sync_mods",
     "uninstall_game",
     "verify_modpack_files",

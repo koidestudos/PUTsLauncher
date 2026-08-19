@@ -48,13 +48,14 @@ class GameInstance:
     id: str
     name: str
     mc_version: str = MC_VERSION
-    forge_version: str = FORGE_VERSION
+    forge_version: str = FORGE_VERSION  # loader version (Forge/Fabric/NeoForge/Quilt)
     forge_profile: str = FORGE_PROFILE
+    loader: str = "forge"  # forge | fabric | neoforge | quilt
     modpack_id: str = ""
     modpack_version: str = ""
     server_ip: str = ""
     server_port: int = 25565
-    source: str = "local"  # local | github | bundled | r2 (legacy)
+    source: str = "local"  # local | github | bundled | r2 | modrinth | curseforge | custom
     created_at: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -189,12 +190,19 @@ def create_instance(
     modpack_version: str = "",
     mc_version: str = MC_VERSION,
     forge_version: str = FORGE_VERSION,
+    loader: str = "forge",
     server_ip: str = "",
     server_port: int = 25565,
     source: str = "local",
     instance_id: str = "",
 ) -> GameInstance:
     from datetime import datetime, timezone
+
+    from launcher.core.loaders import (
+        loader_profile_id,
+        normalize_loader_name,
+        normalize_loader_version,
+    )
 
     iid = _slug(instance_id) if instance_id else _slug(name)
     base = iid
@@ -204,16 +212,15 @@ def create_instance(
         n += 1
 
     mv = mc_version or MC_VERSION
-    fv_raw = forge_version or FORGE_VERSION
-    from launcher.core.installer import forge_profile_id, normalize_forge_install_version
-
-    fv = normalize_forge_install_version(mv, fv_raw)
+    loader_name = normalize_loader_name(loader)
+    fv = normalize_loader_version(loader_name, mv, forge_version or FORGE_VERSION)
     inst = GameInstance(
         id=iid,
         name=name or iid,
         mc_version=mv,
         forge_version=fv,
-        forge_profile=forge_profile_id(mv, fv),
+        forge_profile=loader_profile_id(loader_name, mv, fv),
+        loader=loader_name,
         modpack_id=modpack_id,
         modpack_version=modpack_version,
         server_ip=server_ip,
@@ -226,13 +233,13 @@ def create_instance(
     return inst
 
 
-def _forge_profile(mc_version: str, forge_version: str) -> str:
-    """Map forge version string → launcher profile id (e.g. 1.20.1-forge-47.4.10)."""
-    from launcher.core.installer import forge_profile_id, normalize_forge_install_version
+def _forge_profile(mc_version: str, forge_version: str, loader: str = "forge") -> str:
+    """Map loader version string → launcher profile id."""
+    from launcher.core.loaders import loader_profile_id, normalize_loader_version
 
     mv = (mc_version or MC_VERSION).strip()
-    install = normalize_forge_install_version(mv, forge_version or FORGE_VERSION)
-    return forge_profile_id(mv, install)
+    install = normalize_loader_version(loader, mv, forge_version or FORGE_VERSION)
+    return loader_profile_id(loader, mv, install)
 
 
 def delete_instance(instance_id: str) -> None:

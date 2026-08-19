@@ -1167,11 +1167,25 @@ def test_non_forge_loader_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(modpacks, "cache_dir", lambda: home / "cache")
     monkeypatch.setattr(modpacks, "download_file", lambda *a, **k: pytest.fail("não pode baixar"))
 
-    fabric = ModpackInfo(id="fab", name="Fabric Pack", loader="fabric",
-                         download_url="https://x.invalid/f.zip")
-    with pytest.raises(ValueError, match="Forge"):
-        install_modpack(fabric)
-    assert not (home / "instances" / "fab").exists()
+    weird = ModpackInfo(
+        id="rift",
+        name="Rift Pack",
+        loader="rift",
+        download_url="https://x.invalid/f.zip",
+    )
+    with pytest.raises(ValueError, match="loader|Loader|rift"):
+        install_modpack(weird)
+    assert not (home / "instances" / "rift").exists()
+
+
+def test_fabric_loader_is_accepted_by_catalog_gate(tmp_path, monkeypatch):
+    import launcher.core.modpacks as modpacks
+    from launcher.core.modpacks import ModpackInfo, _require_supported_loader
+
+    _require_supported_loader(ModpackInfo(id="fab", name="Fab", loader="fabric"))
+    _require_supported_loader(ModpackInfo(id="neo", name="Neo", loader="neoforge"))
+    with pytest.raises(ValueError):
+        _require_supported_loader(ModpackInfo(id="x", name="X", loader="rift"))
 
 
 def test_cancel_stops_java_download_midway():
@@ -1335,8 +1349,9 @@ def test_forge_deps_from_mr_and_cf_manifest():
     assert forge == "1.20.1-47.2.0"
     assert loader == "forge"
 
-    with pytest.raises(ValueError, match="fabric"):
-        _forge_from_mr_deps({"minecraft": "1.20.1", "fabric-loader": "0.15.0"})
+    mc, ver, loader = _forge_from_mr_deps({"minecraft": "1.20.1", "fabric-loader": "0.15.0"})
+    assert loader == "fabric"
+    assert ver == "0.15.0"
 
     mc, forge, loader = _forge_from_cf_manifest(
         {
@@ -1348,20 +1363,63 @@ def test_forge_deps_from_mr_and_cf_manifest():
     )
     assert mc == "1.20.1"
     assert forge == "1.20.1-47.2.0"
+    assert loader == "forge"
 
-    with pytest.raises(ValueError, match="Forge"):
-        _forge_from_cf_manifest(
-            {
-                "minecraft": {
-                    "version": "1.20.1",
-                    "modLoaders": [{"id": "fabric-0.15.0", "primary": True}],
-                }
+    mc, ver, loader = _forge_from_cf_manifest(
+        {
+            "minecraft": {
+                "version": "1.20.1",
+                "modLoaders": [{"id": "fabric-0.15.0", "primary": True}],
             }
-        )
+        }
+    )
+    assert loader == "fabric"
+    assert ver == "0.15.0"
+
+
+def test_loader_profile_ids():
+    from launcher.core.loaders import loader_profile_id, normalize_loader_version
+
+    assert normalize_loader_version("forge", "1.20.1", "47.2.0") == "1.20.1-47.2.0"
+    assert normalize_loader_version("fabric", "1.20.1", "0.16.0") == "0.16.0"
+    assert normalize_loader_version("neoforge", "1.21.1", "neoforge-21.1.77") == "21.1.77"
+    assert "forge" in loader_profile_id("forge", "1.20.1", "47.2.0")
+    assert loader_profile_id("fabric", "1.20.1", "0.16.0").startswith("fabric-loader-")
+    assert loader_profile_id("neoforge", "1.21.1", "21.1.77").startswith("neoforge-")
+
+
+def test_cache_cleanup_drops_imported_and_respects_budget(tmp_path, monkeypatch):
+    import launcher.config as config
+    import launcher.core.cache_cleanup as cc
+
+    home = tmp_path / "MinecraftPUTS"
+    cache = home / "cache"
+    monkeypatch.setattr(config, "puts_home", lambda: home)
+    monkeypatch.setattr(cc, "cache_dir", lambda: cache)
+
+    imported = cache / "imported_packs"
+    imported.mkdir(parents=True)
+    big = imported / "old.mrpack"
+    big.write_bytes(b"x" * 1000)
+    # age it
+    import os
+    import time
+
+    old = time.time() - cc.IMPORTED_MAX_AGE_SEC - 10
+    os.utime(big, (old, old))
+
+    modpacks = cache / "modpacks"
+    modpacks.mkdir(parents=True)
+    keep = modpacks / "fresh.zip"
+    keep.write_bytes(b"y" * 500)
+
+    report = cc.cleanup_cache(budget=10_000)
+    assert not big.exists()
+    assert keep.exists()
+    assert report["removed"] >= 1
 
 
 def test_install_mrpack_downloads_and_overrides(tmp_path, monkeypatch):
-    import io
     import zipfile as _zipfile
     from pathlib import Path
 
@@ -1398,9 +1456,10 @@ def test_install_mrpack_downloads_and_overrides(tmp_path, monkeypatch):
         zf.writestr("client-overrides/options.txt", b"fov:1\n")
 
     inst = instances.create_instance("MR", instance_id="mr-pack", source="modrinth")
-    mc_ver, forge_ver = install_mrpack(mr, inst)
+    mc_ver, forge_ver, loader = install_mrpack(mr, inst)
     assert mc_ver == "1.18.2"
     assert forge_ver.startswith("1.18.2-")
+    assert loader == "forge"
     assert (inst.minecraft_path / "mods" / "demo.jar").read_bytes() == b"mod-bytes"
     assert (inst.minecraft_path / "config" / "demo.toml").read_text() == "ok=true\n"
     assert (inst.minecraft_path / "options.txt").read_text() == "fov:1\n"
@@ -1453,9 +1512,10 @@ def test_install_curseforge_zip_uses_manifest(tmp_path, monkeypatch):
         zf.writestr("overrides/config/a.cfg", b"x=1\n")
 
     inst = instances.create_instance("CF", instance_id="cf-pack", source="curseforge")
-    mc_ver, forge_ver = install_curseforge_zip(zpath, inst)
+    mc_ver, forge_ver, loader = install_curseforge_zip(zpath, inst)
     assert mc_ver == "1.20.1"
     assert forge_ver == "1.20.1-47.2.0"
+    assert loader == "forge"
     assert (inst.minecraft_path / "mods" / "mod.jar").read_bytes() == b"cf-mod"
     assert (inst.minecraft_path / "mods" / "bundled.jar").read_bytes() == b"bundled"
     assert (inst.minecraft_path / "config" / "a.cfg").read_text() == "x=1\n"

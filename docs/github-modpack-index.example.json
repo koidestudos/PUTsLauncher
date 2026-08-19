@@ -6,6 +6,7 @@
       "version": "1.0.0",
       "mc_version": "1.18.2",
       "loader": "forge",
+      "loader_version": "1.18.2-40.3.11",
       "forge_version": "1.18.2-40.3.11",
       "description": "Pack oficial do servidor PUTs.",
       "download_url": "puts-smp-1.0.0.zip",
@@ -19,9 +20,29 @@
       "version": "0.2.0",
       "mc_version": "1.20.1",
       "loader": "forge",
-      "forge_version": "47.4.10",
+      "loader_version": "47.4.10",
       "description": "Aceita 47.4.10 ou 1.20.1-47.4.10 — o launcher normaliza.",
       "download_url": "https://github.com/OWNER/REPO/releases/download/v0.2.0/puts-lite-0.2.0.zip"
+    },
+    {
+      "id": "demo-fabric",
+      "name": "Demo Fabric",
+      "version": "1.0.0",
+      "mc_version": "1.20.1",
+      "loader": "fabric",
+      "loader_version": "0.16.0",
+      "description": "Exemplo Fabric — loader + loader_version.",
+      "download_url": "https://github.com/OWNER/REPO/releases/download/v1.0.0/demo-fabric.zip"
+    },
+    {
+      "id": "demo-neoforge",
+      "name": "Demo NeoForge",
+      "version": "1.0.0",
+      "mc_version": "1.21.1",
+      "loader": "neoforge",
+      "loader_version": "21.1.77",
+      "description": "Exemplo NeoForge.",
+      "download_url": "https://github.com/OWNER/REPO/releases/download/v1.0.0/demo-neoforge.zip"
     }
   ]
 }
