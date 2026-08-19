@@ -15,6 +15,10 @@ from launcher.core.modpacks import USER_AGENT, _slug, parse_github_repo
 
 GITHUB_API = "https://api.github.com"
 
+# Stable catalog release — one Release holds index.json + every pack zip.
+MODPACKS_RELEASE_TAG = "modpacks"
+MODPACKS_RELEASE_NAME = "Modpacks"
+
 
 @dataclass
 class GitHubUser:
@@ -205,6 +209,138 @@ def _release_asset_url(owner: str, repo: str, tag: str, filename: str) -> str:
     return f"https://github.com/{owner}/{repo}/releases/download/{tag}/{quote(filename)}"
 
 
+def _is_modpacks_release(rel: dict) -> bool:
+    tag = str(rel.get("tag_name") or "").strip().lower()
+    name = str(rel.get("name") or "").strip().lower()
+    return tag in {MODPACKS_RELEASE_TAG, "modpack"} or name in {
+        MODPACKS_RELEASE_NAME.lower(),
+        "modpack",
+    }
+
+
+def merge_catalog_index(existing: Any, entry: dict[str, Any]) -> dict[str, Any]:
+    """Replace or append a pack entry by id inside ``{ "modpacks": [...] }``."""
+    packs: list[Any] = []
+    if isinstance(existing, dict) and isinstance(existing.get("modpacks"), list):
+        packs = list(existing["modpacks"])
+    elif isinstance(existing, list):
+        packs = list(existing)
+    pack_id = str(entry.get("id") or "").strip()
+    kept: list[Any] = []
+    for item in packs:
+        if not isinstance(item, dict):
+            continue
+        if pack_id and str(item.get("id") or "").strip() == pack_id:
+            continue
+        kept.append(item)
+    kept.append(entry)
+    return {"modpacks": kept}
+
+
+def _load_release_index(release: dict, token: str) -> dict[str, Any]:
+    for asset in release.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        if str(asset.get("name") or "").lower() != "index.json":
+            continue
+        url = str(asset.get("browser_download_url") or "").strip()
+        if not url:
+            continue
+        try:
+            raw = _gh_request("GET", url, token, timeout=60)
+        except GitHubError:
+            continue
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, (bytes, bytearray)):
+            try:
+                data = json.loads(bytes(raw).decode("utf-8"))
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                return data
+    return {"modpacks": []}
+
+
+def _get_or_create_modpacks_release(owner: str, repo: str, token: str) -> dict[str, Any]:
+    release: Any = None
+    try:
+        release = _gh_request(
+            "GET", f"/repos/{owner}/{repo}/releases/tags/{MODPACKS_RELEASE_TAG}", token
+        )
+    except GitHubError:
+        release = None
+
+    if isinstance(release, dict) and release.get("id"):
+        # Keep the display name as "Modpacks" even if an older publish renamed it.
+        if str(release.get("name") or "") != MODPACKS_RELEASE_NAME:
+            try:
+                release = _gh_request(
+                    "PATCH",
+                    f"/repos/{owner}/{repo}/releases/{release['id']}",
+                    token,
+                    data={"name": MODPACKS_RELEASE_NAME},
+                )
+            except GitHubError:
+                pass
+        if isinstance(release, dict):
+            return release
+
+    release = _gh_request(
+        "POST",
+        f"/repos/{owner}/{repo}/releases",
+        token,
+        data={
+            "tag_name": MODPACKS_RELEASE_TAG,
+            "name": MODPACKS_RELEASE_NAME,
+            "body": (
+                "Catálogo de modpacks do **PUTs Launcher**.\n\n"
+                "Este Release é atualizado a cada publicação — não crie um Release "
+                "por versão do pack.\n\n"
+                f"- No launcher: Opções → Catálogo = `{owner}/{repo}`\n"
+                "- Assets: `index.json` + zips dos packs"
+            ),
+            "draft": False,
+            "prerelease": False,
+        },
+    )
+    if not isinstance(release, dict):
+        raise GitHubError("Não consegui criar o Release Modpacks.")
+    return release
+
+
+def _delete_assets_named(owner: str, repo: str, release: dict, token: str, names: set[str]) -> None:
+    wanted = {n.lower() for n in names}
+    for asset in release.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        if str(asset.get("name") or "").lower() not in wanted:
+            continue
+        try:
+            _gh_request("DELETE", f"/repos/{owner}/{repo}/releases/assets/{asset['id']}", token)
+        except GitHubError:
+            pass
+
+
+def _upload_asset(
+    upload_base: str,
+    token: str,
+    filename: str,
+    payload: bytes,
+    content_type: str,
+    *,
+    timeout: int = 300,
+) -> None:
+    _gh_request(
+        "POST",
+        f"{upload_base}?name={quote(filename)}",
+        token,
+        data=payload,
+        content_type=content_type,
+        timeout=timeout,
+    )
+
+
 def publish_modpack_release(
     cfg: LauncherConfig,
     *,
@@ -219,7 +355,9 @@ def publish_modpack_release(
     set_as_catalog: bool = True,
 ) -> dict[str, str]:
     """
-    Create (or reuse) a GitHub Release with the pack zip + index.json.
+    Publish (or update) a pack on the stable GitHub Release named **Modpacks**.
+
+    Merges into existing ``index.json`` so several packs share one release.
     Returns dict with catalog, release_url, zip_url, tag.
     """
     token = (cfg.github_token or "").strip()
@@ -233,7 +371,7 @@ def publish_modpack_release(
     owner, repo = parsed
     cfg.github_publish_repo = f"{owner}/{repo}"
 
-    tag = f"v{_slug(version) or '1.0.0'}"
+    tag = MODPACKS_RELEASE_TAG
     zip_name = f"{_slug(pack_id) or 'pack'}-{_slug(version) or '1.0.0'}.zip"
     staging = cache_dir() / "publish"
     staging.mkdir(parents=True, exist_ok=True)
@@ -249,105 +387,82 @@ def publish_modpack_release(
         dest_zip=zip_path,
     )
 
-    # Create or get release
-    release = None
-    try:
-        release = _gh_request("GET", f"/repos/{owner}/{repo}/releases/tags/{tag}", token)
-    except GitHubError:
-        release = None
-    if not isinstance(release, dict):
-        release = _gh_request(
-            "POST",
-            f"/repos/{owner}/{repo}/releases",
-            token,
-            data={
-                "tag_name": tag,
-                "name": f"{pack_name} {version}",
-                "body": (
-                    f"Modpack **{pack_name}** publicado pelo PUTs Launcher.\n\n"
-                    f"- Minecraft `{mc_version}`\n"
-                    f"- Loader `{loader}` `{loader_version}`\n"
-                    f"- Use `owner/repo` = `{owner}/{repo}` no catálogo do launcher."
-                ),
-                "draft": False,
-                "prerelease": False,
-            },
-        )
-    if not isinstance(release, dict):
-        raise GitHubError("Não consegui criar o Release.")
-
+    release = _get_or_create_modpacks_release(owner, repo, token)
     release_id = release.get("id")
     upload_url_tmpl = str(release.get("upload_url") or "")
-    # upload_url looks like …/assets{?name,label}
     upload_base = upload_url_tmpl.split("{", 1)[0]
     if not upload_base or not release_id:
-        raise GitHubError("Release sem URL de upload.")
+        raise GitHubError("Release Modpacks sem URL de upload.")
 
-    # Delete existing assets with same names (update)
-    for asset in release.get("assets") or []:
-        if not isinstance(asset, dict):
-            continue
-        if str(asset.get("name") or "") in {zip_name, "index.json"}:
-            try:
-                _gh_request("DELETE", f"/repos/{owner}/{repo}/releases/assets/{asset['id']}", token)
-            except GitHubError:
-                pass
+    existing_index = _load_release_index(release, token)
+    entry = {
+        "id": pack_id,
+        "name": pack_name,
+        "version": version,
+        "mc_version": mc_version,
+        "loader": loader,
+        "loader_version": loader_version,
+        "forge_version": loader_version,
+        "description": f"Publicado via PUTs Launcher · {time.strftime('%Y-%m-%d')}",
+        "download_url": zip_name,
+    }
+    index = merge_catalog_index(existing_index, entry)
+
+    # Replace only this pack's zip + the catalog index; leave other pack zips alone.
+    _delete_assets_named(owner, repo, release, token, {zip_name, "index.json"})
 
     zip_bytes = zip_path.read_bytes()
-    _gh_request(
-        "POST",
-        f"{upload_base}?name={quote(zip_name)}",
-        token,
-        data=zip_bytes,
-        content_type="application/zip",
-        timeout=300,
-    )
+    _upload_asset(upload_base, token, zip_name, zip_bytes, "application/zip", timeout=300)
+
+    index_bytes = json.dumps(index, indent=2, ensure_ascii=False).encode("utf-8")
+    _upload_asset(upload_base, token, "index.json", index_bytes, "application/json", timeout=120)
+
+    # Refresh release notes with pack count
+    try:
+        names = [
+            str(p.get("name") or p.get("id") or "?")
+            for p in index.get("modpacks") or []
+            if isinstance(p, dict)
+        ]
+        body = (
+            "Catálogo de modpacks do **PUTs Launcher**.\n\n"
+            f"Packs neste Release ({len(names)}):\n"
+            + "".join(f"- {n}\n" for n in names)
+            + f"\nNo launcher: Opções → Catálogo = `{owner}/{repo}`\n"
+        )
+        _gh_request(
+            "PATCH",
+            f"/repos/{owner}/{repo}/releases/{release_id}",
+            token,
+            data={"name": MODPACKS_RELEASE_NAME, "body": body},
+        )
+    except GitHubError:
+        pass
 
     zip_url = _release_asset_url(owner, repo, tag, zip_name)
-    index = {
-        "modpacks": [
-            {
-                "id": pack_id,
-                "name": pack_name,
-                "version": version,
-                "mc_version": mc_version,
-                "loader": loader,
-                "loader_version": loader_version,
-                "forge_version": loader_version,
-                "description": f"Publicado via PUTs Launcher · {time.strftime('%Y-%m-%d')}",
-                "download_url": zip_name,
-            }
-        ]
-    }
-    index_bytes = json.dumps(index, indent=2, ensure_ascii=False).encode("utf-8")
-    _gh_request(
-        "POST",
-        f"{upload_base}?name=index.json",
-        token,
-        data=index_bytes,
-        content_type="application/json",
-        timeout=120,
-    )
-
     catalog = f"{owner}/{repo}"
     if set_as_catalog:
         cfg.modpack_catalog = catalog
         cfg.modpack_index_url = ""
     cfg.save()
 
-    # Cleanup staging zip (cache budget handles the rest)
     try:
         zip_path.unlink(missing_ok=True)
     except OSError:
         pass
 
+    release_url = str(
+        release.get("html_url") or f"https://github.com/{owner}/{repo}/releases/tag/{tag}"
+    )
     return {
         "catalog": catalog,
         "tag": tag,
         "zip_url": zip_url,
-        "release_url": str(release.get("html_url") or f"https://github.com/{owner}/{repo}/releases/tag/{tag}"),
+        "release_url": release_url,
         "share_hint": (
-            f"Peça para os outros colocarem `{catalog}` em Opções → Catálogo de modpacks, "
-            f"ou usem o Release: {release.get('html_url')}"
+            f"O pack está no Release **Modpacks**. "
+            f"Em Opções → Catálogo de modpacks use `{catalog}`, "
+            f"depois abra **+ Modpack**. "
+            f"Link: {release_url}"
         ),
     }

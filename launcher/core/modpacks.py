@@ -240,13 +240,35 @@ def _packs_from_release_zips(releases: list[dict[str, Any]]) -> list[ModpackInfo
     return packs
 
 
+def _is_stable_modpacks_release(rel: dict[str, Any]) -> bool:
+    """True for the fixed catalog Release (tag/name Modpacks)."""
+    tag = str(rel.get("tag_name") or "").strip().lower()
+    name = str(rel.get("name") or "").strip().lower()
+    return tag in {"modpacks", "modpack"} or name in {"modpacks", "modpack"}
+
+
+def _releases_catalog_order(releases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prefer the stable Modpacks release, then GitHub's newest-first order."""
+    preferred: list[dict[str, Any]] = []
+    rest: list[dict[str, Any]] = []
+    for rel in releases:
+        if not isinstance(rel, dict):
+            continue
+        if _is_stable_modpacks_release(rel):
+            preferred.append(rel)
+        else:
+            rest.append(rel)
+    return preferred + rest
+
+
 def fetch_github_releases_catalog(owner: str, repo: str, timeout: int = 30) -> list[ModpackInfo]:
     """
     Load modpacks from GitHub Releases.
 
     Preference order:
-      1) index.json / modpacks.json / catalog.json asset on the newest release that has one
-      2) otherwise every .zip asset across releases becomes a modpack entry
+      1) index.json / modpacks.json / catalog.json on the stable **Modpacks** release
+      2) same catalog JSON on the newest other release that has one
+      3) otherwise every .zip asset across releases becomes a modpack entry
     """
     api = f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=40"
     try:
@@ -264,8 +286,10 @@ def fetch_github_releases_catalog(owner: str, repo: str, timeout: int = 30) -> l
     if not releases:
         raise ValueError(f"Nenhum release em {owner}/{repo}")
 
-    # Prefer explicit catalog JSON on the newest matching release
-    for rel in releases:
+    ordered = _releases_catalog_order(releases)
+
+    # Prefer explicit catalog JSON (Modpacks release first)
+    for rel in ordered:
         assets = rel.get("assets") or []
         if not isinstance(assets, list):
             continue
@@ -297,7 +321,7 @@ def fetch_github_releases_catalog(owner: str, repo: str, timeout: int = 30) -> l
     if not packs:
         raise ValueError(
             f"Nenhum modpack em {owner}/{repo}. "
-            "Publique um release com index.json ou arquivos .zip."
+            "Publique no Release Modpacks com index.json ou arquivos .zip."
         )
     return packs
 
