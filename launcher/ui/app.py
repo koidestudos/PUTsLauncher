@@ -69,7 +69,6 @@ from launcher.core.mod_library import (
     selected_from_local_jar,
 )
 from launcher.core.github_publish import (
-    GitHubError,
     clear_github_session,
     create_repo,
     list_user_repos,
