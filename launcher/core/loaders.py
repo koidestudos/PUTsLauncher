@@ -55,6 +55,34 @@ def normalize_forge_install_version(mc_version: str, forge_version: str) -> str:
     return fv
 
 
+def _forge_install_mc_prefix(install: str) -> str:
+    match = re.match(r"^(\d+\.\d+(?:\.\d+)?)-", (install or "").strip())
+    return match.group(1) if match else ""
+
+
+def latest_loader_version(loader: str, mc_version: str) -> str:
+    """Newest loader build for this Minecraft version."""
+    name = normalize_loader_name(loader)
+    mv = (mc_version or MC_VERSION).strip() or MC_VERSION
+    if name == "forge":
+        try:
+            ver = mod_loader.get_mod_loader("forge").get_latest_loader_version(mv)
+            return normalize_forge_install_version(mv, ver)
+        except Exception:
+            if FORGE_VERSION.startswith(mv + "-"):
+                return FORGE_VERSION
+            raise RuntimeError(
+                f"Não achei Forge para Minecraft {mv}. "
+                "Confira a conexão ou escolha outra versão do jogo."
+            ) from None
+    try:
+        return mod_loader.get_mod_loader(name).get_latest_loader_version(mv)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Não achei {loader_display_name(name)} para Minecraft {mv}."
+        ) from exc
+
+
 def normalize_loader_version(loader: str, mc_version: str, version: str) -> str:
     """
     Canonical loader version string stored on the instance.
@@ -68,27 +96,29 @@ def normalize_loader_version(loader: str, mc_version: str, version: str) -> str:
     mv = (mc_version or MC_VERSION).strip() or MC_VERSION
 
     if name == "forge":
-        return normalize_forge_install_version(mv, raw or FORGE_VERSION)
+        if not raw:
+            return latest_loader_version("forge", mv)
+        install = normalize_forge_install_version(mv, raw)
+        prefix = _forge_install_mc_prefix(install)
+        # Stale default e.g. keeping 1.18.2-40.3.11 on a 1.20.1 pack
+        if prefix and prefix != mv:
+            return latest_loader_version("forge", mv)
+        return install
 
     if name == "fabric":
         if not raw:
-            try:
-                return mod_loader.get_mod_loader("fabric").get_latest_loader_version(mv)
-            except Exception:
-                return mll.fabric.get_latest_loader_version()
+            return latest_loader_version("fabric", mv)
         raw = re.sub(r"^(fabric-loader-|fabric-)", "", raw, flags=re.I)
-        # fabric-loader-0.16.0-1.20.1 → 0.16.0
         if raw.startswith("loader-"):
             raw = raw[7:]
         parts = raw.split("-")
         if len(parts) >= 2 and re.fullmatch(r"\d+\.\d+(?:\.\d+)*", parts[0]):
-            # 0.16.0-1.20.1
             return parts[0]
         return raw
 
     if name == "quilt":
         if not raw:
-            return mod_loader.get_mod_loader("quilt").get_latest_loader_version(mv)
+            return latest_loader_version("quilt", mv)
         raw = re.sub(r"^(quilt-loader-|quilt-)", "", raw, flags=re.I)
         parts = raw.split("-")
         if len(parts) >= 2 and re.fullmatch(r"\d+\.\d+(?:\.\d+)*", parts[0]):
@@ -97,7 +127,7 @@ def normalize_loader_version(loader: str, mc_version: str, version: str) -> str:
 
     if name == "neoforge":
         if not raw:
-            return mod_loader.get_mod_loader("neoforge").get_latest_loader_version(mv)
+            return latest_loader_version("neoforge", mv)
         raw = re.sub(r"^neoforge-", "", raw, flags=re.I)
         return raw
 

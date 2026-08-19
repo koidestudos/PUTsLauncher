@@ -1378,7 +1378,7 @@ def test_forge_deps_from_mr_and_cf_manifest():
 
 
 def test_loader_profile_ids():
-    from launcher.core.loaders import loader_profile_id, normalize_loader_version
+    from launcher.core.loaders import latest_loader_version, loader_profile_id, normalize_loader_version
 
     assert normalize_loader_version("forge", "1.20.1", "47.2.0") == "1.20.1-47.2.0"
     assert normalize_loader_version("fabric", "1.20.1", "0.16.0") == "0.16.0"
@@ -1386,6 +1386,13 @@ def test_loader_profile_ids():
     assert "forge" in loader_profile_id("forge", "1.20.1", "47.2.0")
     assert loader_profile_id("fabric", "1.20.1", "0.16.0").startswith("fabric-loader-")
     assert loader_profile_id("neoforge", "1.21.1", "21.1.77").startswith("neoforge-")
+
+    # Empty / stale 1.18.2 default must not stick on a 1.20.1 instance
+    fixed = normalize_loader_version("forge", "1.20.1", "")
+    assert fixed.startswith("1.20.1-")
+    stale = normalize_loader_version("forge", "1.20.1", "1.18.2-40.3.11")
+    assert stale.startswith("1.20.1-")
+    assert latest_loader_version("forge", "1.18.2").startswith("1.18.2-")
 
 
 def test_cache_cleanup_drops_imported_and_respects_budget(tmp_path, monkeypatch):

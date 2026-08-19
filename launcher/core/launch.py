@@ -128,18 +128,12 @@ def apply_video_options(mc_dir: Path, fullscreen: bool, vsync: bool) -> None:
 
 def build_launch_command(cfg: LauncherConfig, session: GameSession, java: str) -> list[str]:
     mc_dir = str(minecraft_dir())
-    loader_name = "forge"
     try:
         from launcher.core.installer import active_loader_target
-        from launcher.core.instances import GameInstance, get_active_id
 
         loader_name, _, _, profile = active_loader_target()
-        inst = GameInstance.load(get_active_id())
-        if inst and inst.forge_profile:
-            profile = inst.forge_profile
-        if inst and getattr(inst, "loader", None):
-            loader_name = inst.loader
     except Exception:
+        loader_name = "forge"
         profile = FORGE_PROFILE
 
     options: mll.types.MinecraftOptions = {
@@ -216,6 +210,12 @@ def prepare_and_launch(
         command = build_launch_command(cfg, session, java)
     mc_dir = str(minecraft_dir())
 
+    from launcher.core.installer import active_loader_target
+    from launcher.core.loaders import loader_display_name
+
+    loader_name, mc_ver, loader_ver, profile_id = active_loader_target()
+    label = loader_display_name(loader_name)
+
     log_path = logs_dir() / "minecraft_stdout.log"
     write_launch_log(
         [
@@ -223,6 +223,10 @@ def prepare_and_launch(
             f"offline={session.offline}",
             f"java={java}",
             f"cwd={mc_dir}",
+            f"loader={loader_name}",
+            f"mc={mc_ver}",
+            f"loader_version={loader_ver}",
+            f"profile={profile_id}",
             f"cmd={' '.join(command[:8])} … ({len(command)} args)",
         ]
     )
@@ -242,17 +246,35 @@ def prepare_and_launch(
 
     if not Path(java).exists():
         raise RuntimeError(f"Java não encontrado: {java}")
-    from launcher.core.installer import active_forge_target
 
-    _, _, profile_id = active_forge_target()
     profile = Path(mc_dir) / "versions" / profile_id / f"{profile_id}.json"
     if not profile.exists():
         raise RuntimeError(
-            f"Perfil Forge ausente: {profile_id}\n"
+            f"Perfil {label} ausente: {profile_id}\n"
             "Clique em BAIXAR de novo para instalar a versão certa desta instância."
         )
 
     proc = subprocess.Popen(command, **popen_kwargs)
+    # Catch instant crashes (wrong loader / bad jar) and surface the log.
+    import time
+
+    time.sleep(1.2)
+    code = proc.poll()
+    if code is not None and code != 0:
+        tail = ""
+        try:
+            stdout.flush()
+            text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+            lines = [ln for ln in text.splitlines() if ln.strip()]
+            tail = "\n".join(lines[-25:])
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"O Minecraft fechou na hora (código {code}).\n"
+            f"Loader: {label} {loader_ver} · MC {mc_ver} · perfil {profile_id}\n"
+            + (f"\nÚltimas linhas do log:\n{tail}" if tail else f"\nVeja {log_path}")
+        )
+
     tracker.complete_phase("Minecraft iniciado")
     tracker.set_phase_fraction(1.0, "Pronto!")
     return proc

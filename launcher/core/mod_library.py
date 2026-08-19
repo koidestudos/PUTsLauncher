@@ -364,8 +364,9 @@ def create_custom_modpack(
         raise ValueError("Adicione pelo menos um mod ao pack.")
     loader_name = require_supported_loader(loader)
     mv = (mc_version or MC_VERSION).strip() or MC_VERSION
-    # Let install_loader pick latest when version blank
-    loader_ver = normalize_loader_version(loader_name, mv, "")
+    from launcher.core.loaders import latest_loader_version
+
+    loader_ver = latest_loader_version(loader_name, mv)
 
     pack_id = _slug(name) or "custom-pack"
     inst = create_instance(
